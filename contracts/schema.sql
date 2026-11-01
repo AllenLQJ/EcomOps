@@ -114,6 +114,7 @@ CREATE TABLE listing_reviews (
   verdict VARCHAR(32) NOT NULL,            -- REJECTED_BLOCKING | PENDING_MANUAL_VERIFY | PASSED_WITH_SUGGESTIONS
   report JSONB NOT NULL,
   fallback_used BOOLEAN NOT NULL DEFAULT FALSE,
+  scenario_seed JSONB,                    -- 供 cs_training 使用的对练场景种子卡（阻断项/待核实项的高频争议点）
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

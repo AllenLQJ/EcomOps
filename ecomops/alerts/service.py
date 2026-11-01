@@ -19,6 +19,8 @@ ENSURE_SQL = [
       tenant_id VARCHAR(64) NOT NULL, action VARCHAR(16) NOT NULL, actor_user_id VARCHAR(64) NOT NULL,
       reason TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
     "CREATE INDEX IF NOT EXISTS idx_alert_actions_event ON alert_actions (event_id)",
+    # 已有库的幂等补列（与 contracts/schema.sql 保持一致）
+    "ALTER TABLE listing_reviews ADD COLUMN IF NOT EXISTS scenario_seed JSONB",
 ]
 TYPES = {"REFUND_CALLBACK": "CALLBACK_FAILED_MANUAL", "CLAIM_RESULT": "RESULT_NOTIFY_FAILED"}
 
