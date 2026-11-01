@@ -1,11 +1,13 @@
 """Training API with JSON-framed server-sent events."""
 import json
+from contextlib import aclosing
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ecomops.core import llm
 from ecomops.core.auth import Identity, require_roles
 from ecomops.training import service
 
@@ -39,6 +41,19 @@ def event(name: str, data: dict) -> str:
 
 @router.post("/sessions/{session_id}/chat/stream")
 async def chat_stream(session_id: str, body: ChatMessage, request: Request, identity: Identity = Depends(identity_dependency)):
+    if llm.configured():
+        await service.check_chat_access(session_id, identity)
+
+        async def live():
+            try:
+                async with aclosing(service.stream_chat(session_id, identity, body.message,
+                        getattr(request.app.state, "training_graph", None))) as events:
+                    async for name, data in events:
+                        yield event(name, data)
+            except Exception:
+                yield event("error", {"code": "UPSTREAM_ERROR"})
+        return StreamingResponse(live(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     # Resolve errors and commit state before sending HTTP/SSE headers.
     state, reply, advanced = await service.chat(session_id, identity, body.message,
                                                 getattr(request.app.state, "training_graph", None))

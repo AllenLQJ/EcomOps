@@ -2,6 +2,7 @@
 import hashlib
 import re
 import uuid
+from contextlib import aclosing
 
 import httpx
 from sqlalchemy import text
@@ -98,3 +99,30 @@ async def transition(tenant, queue_id, action, draft=None):
             WHERE tenant_id=:tenant AND queue_id=:id AND publish_status IN ('PUBLISHING','PUBLISH_FAILED')"""),
             params | {"status": "PUBLISH_FAILED" if error else "PUBLISHED", "error": error})
         return await get_item(c, tenant, queue_id)
+
+
+async def check_session_access(body, identity):
+    if body.session_id is None:
+        return
+    async with get_engine().connect() as conn:
+        row = (await conn.execute(text("SELECT user_id FROM qa_sessions WHERE tenant_id=:tenant AND session_id=:sid"),
+            {"tenant": identity.tenant_id, "sid": body.session_id})).mappings().first()
+    # A new caller-supplied ID is allowed, as in save_memory.
+    if row and row["user_id"] != identity.user_id:
+        raise ApiError(404, "NOT_FOUND")
+
+
+async def stream_ask(body, identity, graph=None):
+    sid = body.session_id or uuid.uuid4().hex
+    compiled = graph if graph is not None else default_graph()
+    async with aclosing(compiled.astream(
+        {"query": body.query, "catalog_category_id": body.catalog_category_id,
+         "tenant_id": identity.tenant_id, "user_id": identity.user_id, "session_id": sid, "streaming": True},
+        config={"configurable": {"thread_id": f"kb:{identity.tenant_id}:{sid}:{uuid.uuid4().hex}"}},
+        stream_mode=["custom", "values"])) as events:
+        async for mode, value in events:
+            if mode == "custom":
+                yield value
+            else:
+                final = value
+    yield "done", {key: final[key] for key in ("answer", "fallback_used", "enqueued_queue_id")}

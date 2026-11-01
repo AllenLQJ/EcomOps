@@ -1,6 +1,7 @@
 """Deterministic buyer simulation and creator-scoped training state."""
 import json
 import re
+from contextlib import aclosing
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -123,10 +124,36 @@ async def chat(session_id: str, identity: Identity, message: str, graph=None) ->
     graph = graph if graph is not None else default_graph()
     async with get_engine().begin() as conn:
         result = await graph.ainvoke(
-            dict(session_id=session_id, tenant_id=identity.tenant_id, user_id=identity.user_id, message=message),
+            dict(session_id=session_id, tenant_id=identity.tenant_id, user_id=identity.user_id, message=message, streaming=False),
             config={"configurable": {"thread_id": f"train:{identity.tenant_id}:{session_id}", "connection": conn}})
     return result["data"], result["reply"], result["advanced"]
 
 
 def reply_segments(reply: str):
     return re.findall(r"[^，。！？；\n]{1,16}[，。！？；\n]?|[，。！？；\n]", reply)
+
+
+async def check_chat_access(session_id, identity):
+    async with get_engine().connect() as conn:
+        data = await load(conn, session_id, identity)
+    if data['status'] != 'ACTIVE' or data['stage'] not in KEYWORDS:
+        raise ApiError(422, 'INVALID_STAGE', 'training session has ended or has an invalid stage')
+
+
+async def stream_chat(session_id, identity, message, graph=None):
+    from ecomops.training.graph import default_graph
+    compiled = graph if graph is not None else default_graph()
+    async with get_engine().begin() as conn:
+        async with aclosing(compiled.astream(
+            dict(session_id=session_id, tenant_id=identity.tenant_id, user_id=identity.user_id,
+                 message=message, streaming=True),
+            config={"configurable": {"thread_id": f"train:{identity.tenant_id}:{session_id}", "connection": conn}},
+            stream_mode=["custom", "values"])) as events:
+            async for mode, value in events:
+                if mode == 'custom':
+                    yield value
+                else:
+                    final = value
+    if final['data']['report'] is not None:
+        yield 'report', final['data']['report']
+    yield 'done', {'session_id': final['data']['session_id']}

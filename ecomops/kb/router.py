@@ -1,10 +1,12 @@
 import json
+from contextlib import aclosing
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ecomops.core import llm
 from ecomops.core.auth import require_roles
 from ecomops.core.errors import ApiError
 from ecomops.kb import service
@@ -40,6 +42,19 @@ def event(name: str, data: dict) -> str:
 
 @router.post("/ask/stream")
 async def ask_stream(body: Ask, request: Request, identity=Depends(read)):
+    if llm.configured():
+        await service.check_session_access(body, identity)
+
+        async def live():
+            try:
+                async with aclosing(service.stream_ask(body, identity,
+                        graph=getattr(request.app.state, "kb_graph", None))) as events:
+                    async for name, data in events:
+                        yield event(name, data)
+            except Exception:
+                yield event("error", {"code": "UPSTREAM_ERROR"})
+        return StreamingResponse(live(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     # 先跑完图并提交它的副作用，再开始响应：所以越权/不存在（404）、上游失败（502）都是真正的 HTTP 错误，
     # 不会出现"200 + 流里一个 error 事件"。异常细节（可能含 URL/密钥）一律不回给客户端。
     try:
