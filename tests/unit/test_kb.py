@@ -129,3 +129,31 @@ def test_kb_session_upsert_and_summary(client, db_name):
         assert bool(summary) == (turn >= 10)
         if turn >= 10:
             assert '你好10' in summary and '你好11' not in summary
+
+
+def test_rag_internal_token_is_sent_on_search_and_publish(client, monkeypatch):
+    """接真实 EcomRAG 时每次调用都带 X-Internal-Token；没配置则不发（桩不校验）。"""
+    from ecomops.core import config
+    seen = []
+    from httpx import _client
+    original = _client.AsyncClient          # 夹具已把 httpx.AsyncClient 换成走桩的版本，这里取真正的类
+
+    def spy_client(**kwargs):
+        def handler(request):
+            seen.append((request.url.path, request.headers.get("x-internal-token")))
+            return httpx.Response(200, json={"hits": [], "chunk_id": "x", "milvus_pk": "y"})
+        return original(transport=httpx.MockTransport(handler), **kwargs)
+    monkeypatch.setattr(service.httpx, 'AsyncClient', spy_client)
+    monkeypatch.setenv("ECOMOPS_RAG_INTERNAL_TOKEN", "rag-secret-token")
+    config.get_settings.cache_clear()
+    try:
+        r = client.post('/api/v1/kb/ask', json={'query': '退换几天'})
+        assert r.status_code == 200
+        assert ("/api/v1/rag/search", "rag-secret-token") in seen
+        monkeypatch.delenv("ECOMOPS_RAG_INTERNAL_TOKEN")
+        config.get_settings.cache_clear()
+        seen.clear()
+        client.post('/api/v1/kb/ask', json={'query': '退换几天'})
+        assert seen and all(token is None for _, token in seen)
+    finally:
+        config.get_settings.cache_clear()

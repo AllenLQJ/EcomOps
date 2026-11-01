@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     pilot_url: str = "http://127.0.0.1:8085"
     pilot_internal_token: str = "dev-internal-token"
     rag_url: str = "http://127.0.0.1:8002"
+    rag_internal_token: str = ""           # 真实 EcomRAG 的 INTERNAL_TOKEN；桩不校验，留空即可
     rag_search_timeout_s: float = 3.0      # 接真实 EcomRAG（含 LLM 生成）时需调大，见 adapters/
     rag_upsert_timeout_s: float = 3.0      # 真实入库走 ingest 命令行，需调大
     rag_claim_timeout_s: float = 2.0       # 售后审核里的条款检索，尽力而为
@@ -40,6 +41,10 @@ class Settings(BaseSettings):
     minio_secret_key: str = "ecomops_minio_pw"
     minio_bucket: str = "ecomops-docs"
     object_dir: str = ".data/objects"
+
+
+def rag_headers(s: "Settings") -> dict:
+    return {"X-Internal-Token": s.rag_internal_token} if s.rag_internal_token else {}
 
 
 @lru_cache

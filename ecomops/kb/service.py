@@ -7,7 +7,7 @@ import uuid
 import httpx
 from sqlalchemy import text
 
-from ecomops.core.config import get_settings
+from ecomops.core.config import get_settings, rag_headers
 from ecomops.core.db import get_engine
 from ecomops.core.errors import ApiError
 from ecomops.core import llm
@@ -39,7 +39,7 @@ async def ask(body, identity):
                     r = await client.post(get_settings().rag_url + "/api/v1/rag/search", json={
                         "query": query, "tenant_id": identity.tenant_id,
                         "catalog_category_id": body.catalog_category_id,
-                        "top_k": {"PRECISE": 8, "VAGUE": 10, "BROAD": 4}[kind]})
+                        "top_k": {"PRECISE": 8, "VAGUE": 10, "BROAD": 4}[kind]}, headers=rag_headers(get_settings()))
                     r.raise_for_status()
                     hits.extend(r.json()["hits"])
             hits = sorted({h["chunk_id"]: h for h in hits}.values(), key=lambda h: h["score"], reverse=True)
@@ -124,7 +124,8 @@ async def transition(tenant, queue_id, action, draft=None):
                 "catalog_category_id": item["catalog_category_id"],
                 "text": item["question_text"] + "\n" + item["standard_answer_draft"],
                 "rule_source": item["rule_source"], "version": item["version"],
-                "effective_from": item["effective_from"], "effective_to": item["effective_to"], "is_demo_rule": False})
+                "effective_from": item["effective_from"], "effective_to": item["effective_to"], "is_demo_rule": False},
+                headers=rag_headers(get_settings()))
             response.raise_for_status()
     except httpx.HTTPError as exc:
         error = str(exc)[:2000]

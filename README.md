@@ -39,13 +39,16 @@ uv venv --python 3.12 .venv && uv pip install -r requirements.txt --python .venv
 
 ## 接入真实 EcomRAG（可选，替代 RAG 桩）
 
+EcomRAG 已提供原生接口（`POST /api/v1/rag/search`、`POST /internal/v1/kb/upsert`，需 `X-Internal-Token`），EcomOps 直接调用，不再经过适配器：
+
 ```bash
-# 先在 ../EcomRAG 起好依赖与后端 :8010，并调高游客配额（其 .env 里设 GUEST_DAILY_LIMIT，默认每天仅 5 次）
-scripts/start_with_ecomrag.sh
+# 1) ../EcomRAG/backend：INTERNAL_TOKEN=<令牌> uv run uvicorn app.main:create_app --factory --port 8010
+# 2) 本仓库：
+RAG_INTERNAL_TOKEN=<同一个令牌> scripts/start_with_ecomrag.sh
 ```
 
-适配器见 `adapters/ecomrag_adapter.py`。已用真实 EcomRAG 实测知识问答（命中得分 0.99；库外问题进待补充队列）；
-**知识发布（入库）只有单元测试，未对真实 Milvus 实测**，避免向 EcomRAG 知识库写入测试数据。
+检索返回的 `score` 是 EcomRAG 按余弦校准后的相关度（库外问题低、会进待补充队列）。已实测：库内问题 top1=1.0，库外问题 0.37–0.65 进待补充队列。
+**知识发布（upsert）已在 EcomRAG 一侧对临时集合验证过；EcomOps → 真实 `kb_chunks` 的发布没做**，避免向真实知识库写入测试数据。EcomRAG 当前不按 tenant_id / catalog_category_id 过滤。
 
 ## 全栈容器（EcomPilot + EcomOps）
 

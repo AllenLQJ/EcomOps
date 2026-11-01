@@ -4,7 +4,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY ecomops ./ecomops
-COPY adapters ./adapters
 COPY stubs ./stubs
 COPY static ./static
 COPY contracts ./contracts

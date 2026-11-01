@@ -8,7 +8,7 @@ from langgraph.types import interrupt
 from sqlalchemy import text
 
 from ecomops.claims import repo, tracks
-from ecomops.core.config import get_settings
+from ecomops.core.config import get_settings, rag_headers
 from ecomops.core.db import get_engine
 
 
@@ -31,7 +31,8 @@ async def load_order_and_policy(state: State) -> dict:
         async with httpx.AsyncClient(timeout=get_settings().rag_claim_timeout_s) as client:
             r = await client.post(get_settings().rag_url.rstrip("/") + "/api/v1/rag/search",
                                   json={"query": t["buyer_reason_text"] or "售后退换", "tenant_id": t["tenant_id"],
-                                        "catalog_category_id": t["catalog_category_id"], "top_k": 3})
+                                        "catalog_category_id": t["catalog_category_id"], "top_k": 3},
+                                  headers=rag_headers(get_settings()))
             r.raise_for_status()
             hits = [h.get("rule_source") for h in r.json().get("hits", [])][:3]
     except (httpx.HTTPError, ValueError):
