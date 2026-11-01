@@ -30,8 +30,8 @@ def test_html_structure_and_pages():
     for tag in ("html", "head", "title", "body", "nav", "main"):
         assert tag in parser.tags
         assert f"</{tag}>" in source
-    assert {"app", "claims-page", "kb-page", "listing-page", "training-page"} <= parser.ids
-    for title in ("售后审批", "知识待补充", "文案审查", "客服对练"):
+    assert {"app", "claims-page", "kb-page", "listing-page", "training-page", "alerts-page"} <= parser.ids
+    for title in ("售后审批", "知识待补充", "文案审查", "客服对练", "告警"):
         assert title in source
     assert parser.scripts == ["https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"]
     assert "innerHTML" not in source
@@ -45,10 +45,12 @@ def test_key_api_paths_and_controls():
         "/confirm", "/api/v1/kb/ask", "/api/v1/kb/pending?status=",
         "/api/v1/kb/pending/", "/discard", "/publish", "/retry",
         "/api/v1/listing/reviews", "/api/v1/training/sessions",
-        "/chat/stream",
+        "/chat/stream", "/api/v1/alerts", "/resolve",
     ):
         assert path in source
     for marker in (
+        "ALERT_STATE_CONFLICT", "document.hidden", "当前角色无权访问",
+        "暂无告警", "已提交重试", "由系统自动重试，无需人工操作",
         "Authorization", "Bearer ", "localStorage", "FormData", "getReader",
         "TextDecoder", "PENDING_SUPERVISOR_REVIEW", "MODIFY_AMOUNT",
         "REQUEST_EVIDENCE", "idempotent_replayed", "max_refundable_cents",
@@ -56,4 +58,20 @@ def test_key_api_paths_and_controls():
         "blocking_violations", "manual_verify_items", "advisory_suggestions",
         "rule_accuracy", "emotional_soothing", "solution_compliance",
     ):
+        assert marker in source
+
+
+def test_error_codes_and_role_guards():
+    source = INDEX.read_text(encoding="utf-8")
+    for code in (
+        "INVALID_REQUEST", "UNSUPPORTED_FILE", "UNAUTHORIZED",
+        "INTERNAL_AUTH_FAILED", "FORBIDDEN_ROLE", "NOT_FOUND",
+        "ALERT_STATE_CONFLICT", "CLAIM_STATE_CONFLICT",
+        "PUBLISH_STATE_CONFLICT", "AMOUNT_EXCEEDS_LIMIT", "INVALID_STAGE",
+        "UPSTREAM_ERROR", "UPSTREAM_TIMEOUT",
+    ):
+        assert f"{code}:" in source
+    for marker in ("visiblePages", "canAccess", "canWriteKB", "decodeIdentity",
+                   "expireLogin", "localStorage.removeItem", "stuck:",
+                   "Array.from(resolveReason.trim()).length<3"):
         assert marker in source
