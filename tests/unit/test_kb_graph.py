@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
+from ecomops.core.errors import install_error_handlers
 from fastapi.testclient import TestClient
 
 from ecomops.core.auth import Identity
@@ -215,6 +216,7 @@ async def test_service_thread_and_response():
 @pytest.mark.parametrize("failed", [False, True])
 def test_sse_sequence(monkeypatch, failed):
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(router)
     app.state.kb_graph = object()
     app.dependency_overrides[read] = lambda: Identity(user_id="u", tenant_id="a", role="operator")
@@ -223,6 +225,10 @@ def test_sse_sequence(monkeypatch, failed):
     monkeypatch.setattr(service, "ask", ask)
     with TestClient(app) as client:
         response = client.post("/api/v1/kb/ask/stream", json={"query": "你好"})
+    if failed:       # 图在响应开始前就跑完了：失败是真正的 HTTP 错误，且不泄露异常细节
+        assert response.status_code == 502 and "secret" not in response.text
+        assert response.json()["error"]["code"] == "UPSTREAM_ERROR"
+        return
     assert response.status_code == 200 and response.headers["content-type"].startswith("text/event-stream")
     frames = [part.splitlines() for part in response.text.strip().split("\n\n")]
     names = [f[0].removeprefix("event: ") for f in frames]

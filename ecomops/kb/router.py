@@ -40,20 +40,16 @@ def event(name: str, data: dict) -> str:
 
 @router.post("/ask/stream")
 async def ask_stream(body: Ask, request: Request, identity=Depends(read)):
-    # Finish the graph and commit its side effects before starting the response.
-    error = None
+    # 先跑完图并提交它的副作用，再开始响应：所以越权/不存在（404）、上游失败（502）都是真正的 HTTP 错误，
+    # 不会出现"200 + 流里一个 error 事件"。异常细节（可能含 URL/密钥）一律不回给客户端。
     try:
         result = await service.ask(body, identity, graph=getattr(request.app.state, "kb_graph", None))
-    except ApiError as exc:
-        error = {"code": exc.code}
+    except ApiError:
+        raise
     except Exception:
-        # Never send provider exception details, URLs or credentials to clients.
-        error = {"code": "UPSTREAM_ERROR"}
+        raise ApiError(502, "UPSTREAM_ERROR", "knowledge answer failed") from None
 
     async def stream():
-        if error is not None:
-            yield event("error", error)
-            return
         yield event("meta", {key: result[key] for key in ("query_type", "top1_score", "hits", "session_id")})
         # complete() returns full text: these are chunks, not live model tokens.
         for offset in range(0, len(result["answer"]), 40):
