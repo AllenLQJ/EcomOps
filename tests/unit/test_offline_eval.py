@@ -104,8 +104,10 @@ def test_out_and_skipped_retrieval(tmp_path, capsys):
     assert '不具统计意义，只用于发现回归和明显错误' in printed
     assert '| 检索命中率 | 12 | 未运行（需要 EcomRAG） |' in printed
     assert '运行失败' not in printed
-    assert '判错样本：11 条（最多展示 10 条）' in printed
-    assert printed.count('- {"sample":') == 10
+    # 否定语境修复前这里是 11 条误判（precision 52%）；现在只剩 1 条已知误判：培训材料里引用违规词，规则无法判断语境
+    assert '判错样本：1 条（最多展示 10 条）' in printed
+    assert printed.count('- {"sample":') == 1 and '销量第一' in printed
+    assert 'recall=100.00%' in printed and 'precision=92.31%' in printed
     assert eval_module.evaluate_retrieval([], None)['skipped'] == '未运行（需要 EcomRAG）'
 
 
