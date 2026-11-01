@@ -1,0 +1,256 @@
+openapi: 3.0.3
+info: {title: EcomOps API, version: 1.0.0}
+servers: [{url: "http://127.0.0.1:8000"}]
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer, bearerFormat: JWT}
+    internal: {type: apiKey, in: header, name: X-Internal-Token}
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties: {code: {type: string}, message: {type: string}, details: {type: object}}
+    Claim:
+      type: object
+      required: [claim_no, claim_status, order_id, max_refundable_cents]
+      properties:
+        claim_no: {type: string}
+        claim_status: {type: string, enum: [SUBMITTED, AUTO_REJECTED, NEED_MORE_EVIDENCE, PENDING_SUPERVISOR_REVIEW, SUPERVISOR_REJECTED, WITHDRAWN, APPROVED_PENDING_CALLBACK, CALLBACK_RETRYING, COMPLETED, CALLBACK_FAILED_MANUAL]}
+        order_id: {type: string}
+        order_item_id: {type: string}
+        user_id: {type: string}
+        max_refundable_cents: {type: integer}
+        suggested_refund_cents: {type: integer, nullable: true}
+        approved_refund_cents: {type: integer, nullable: true}
+        risk_level: {type: string, nullable: true}
+        route_reason: {type: string, nullable: true}
+        fallback_used: {type: boolean}
+        created_at: {type: string}
+        tracks:
+          type: array
+          items: {type: object, properties: {track: {type: string}, passed: {type: boolean}, confidence: {type: number}, fallback_used: {type: boolean}, detail: {type: object}}}
+        approvals:
+          type: array
+          items: {type: object, properties: {action: {type: string}, approver_user_id: {type: string}, amount_cents: {type: integer, nullable: true}, reason: {type: string, nullable: true}}}
+        outbox: {type: object, nullable: true, properties: {status: {type: string}, attempts: {type: integer}, refund_idempotency_key: {type: string}}}
+    PendingItem:
+      type: object
+      required: [queue_id, publish_status, question_text]
+      properties:
+        queue_id: {type: string}
+        question_text: {type: string}
+        catalog_category_id: {type: string, nullable: true}
+        standard_answer_draft: {type: string, nullable: true}
+        version: {type: integer}
+        deterministic_chunk_id: {type: string, nullable: true}
+        publish_status: {type: string, enum: [PENDING_REVIEW, DISCARDED, PUBLISHING, PUBLISHED, PUBLISH_FAILED]}
+        last_error: {type: string, nullable: true}
+    ListingReport:
+      type: object
+      required: [review_id, verdict, blocking_violations, manual_verify_items, advisory_suggestions, fallback_used]
+      properties:
+        review_id: {type: string}
+        verdict: {type: string, enum: [REJECTED_BLOCKING, PENDING_MANUAL_VERIFY, PASSED_WITH_SUGGESTIONS]}
+        declared_category: {type: string}
+        blocking_violations: {type: array, items: {type: object}}
+        manual_verify_items: {type: array, items: {type: object}}
+        advisory_suggestions: {type: array, items: {type: object}}
+        fallback_used: {type: boolean}
+        pdf_object_path: {type: string}
+  responses:
+    Err: {description: error, content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+security: [{bearer: []}]
+paths:
+  /health:
+    get: {security: [], responses: {"200": {description: ok}}}
+  /api/v1/dev/token:
+    post:
+      summary: "仅 ECOMOPS_DEV_TOKENS=1 时存在"
+      security: []
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [user_id, role], properties: {user_id: {type: string}, role: {type: string, enum: [supervisor, operator, cs_agent]}, tenant_id: {type: string}}}}}
+      responses: {"200": {description: ok, content: {application/json: {schema: {type: object, required: [token], properties: {token: {type: string}}}}}}}
+  /internal/v1/claims/submit:
+    post:
+      summary: "EcomPilot 提交售后审核单，按 claim_no 幂等；契约见路线图 4.2-1"
+      security: [{internal: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [claim_no, tenant_id, user_id, order_id, order_item_id, sku_id, max_refundable_cents]
+              properties:
+                claim_no: {type: string}
+                tenant_id: {type: string}
+                user_id: {type: string}
+                order_id: {type: string}
+                order_item_id: {type: string}
+                sku_id: {type: string}
+                catalog_category_id: {type: string}
+                item_payable_cents: {type: integer}
+                max_refundable_cents: {type: integer}
+                days_since_delivery: {type: integer}
+                claim_type: {type: string}
+                buyer_reason_text: {type: string}
+                evidence_urls: {type: array, items: {type: string}}
+                nlu_signal: {type: object}
+      responses:
+        "202": {description: accepted, content: {application/json: {schema: {type: object, required: [claim_no, status], properties: {claim_no: {type: string}, status: {type: string}, idempotent_replayed: {type: boolean}}}}}}
+        "401": {$ref: "#/components/responses/Err"}
+  /internal/v1/claims/{claim_no}/evidence:
+    post:
+      summary: "买家补充凭证（NEED_MORE_EVIDENCE → 重新审核）"
+      security: [{internal: []}]
+      parameters: [{name: claim_no, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [evidence_urls], properties: {evidence_urls: {type: array, items: {type: string}}}}}}
+      responses:
+        "202": {description: accepted}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
+  /internal/v1/claims/{claim_no}/withdraw:
+    post:
+      summary: 买家撤回
+      security: [{internal: []}]
+      parameters: [{name: claim_no, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
+  /api/v1/claims:
+    get:
+      summary: 工单列表（supervisor/operator，按租户）
+      parameters: [{name: status, in: query, schema: {type: string}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: object, required: [claims], properties: {claims: {type: array, items: {$ref: "#/components/schemas/Claim"}}}}}}}
+        "403": {$ref: "#/components/responses/Err"}
+  /api/v1/claims/{claim_no}:
+    get:
+      parameters: [{name: claim_no, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Claim"}}}}
+        "404": {$ref: "#/components/responses/Err"}
+  /api/v1/claims/{claim_no}/confirm:
+    post:
+      summary: 主管决定；并发重复同一决定幂等，只生效一次
+      parameters: [{name: claim_no, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [action], properties: {action: {type: string, enum: [APPROVE, MODIFY_AMOUNT, REJECT, REQUEST_EVIDENCE]}, amount_cents: {type: integer}, reason: {type: string}}}}}
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: object, required: [claim_no, claim_status, idempotent_replayed], properties: {claim_no: {type: string}, claim_status: {type: string}, idempotent_replayed: {type: boolean}}}}}}
+        "403": {$ref: "#/components/responses/Err"}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
+        "422": {$ref: "#/components/responses/Err"}
+  /internal/v1/outbox/run-once:
+    post:
+      summary: 触发一次出箱/对账扫描（后台协程也会周期执行）
+      security: [{internal: []}]
+      responses: {"200": {description: ok, content: {application/json: {schema: {type: object, properties: {processed: {type: integer}}}}}}}
+  /api/v1/kb/ask:
+    post:
+      summary: kb_qa 问答；top1_score<0.75 低分入队
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [query], properties: {query: {type: string}, catalog_category_id: {type: string}, session_id: {type: string}, web_search: {type: boolean}}}}}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [answer, query_type, top1_score]
+                properties:
+                  answer: {type: string}
+                  query_type: {type: string, enum: [GENERAL, PRECISE, VAGUE, BROAD]}
+                  top1_score: {type: number}
+                  hits: {type: array, items: {type: object}}
+                  enqueued_queue_id: {type: string, nullable: true}
+                  session_id: {type: string}
+  /api/v1/kb/pending:
+    get:
+      parameters: [{name: status, in: query, schema: {type: string}}]
+      responses: {"200": {description: ok, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/PendingItem"}}}}}}}}
+  /api/v1/kb/pending/{queue_id}/discard:
+    post:
+      parameters: [{name: queue_id, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/PendingItem"}}}}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
+  /api/v1/kb/pending/{queue_id}/publish:
+    post:
+      summary: "PENDING_REVIEW/PUBLISH_FAILED/PUBLISHING → PUBLISHING → (RAG upsert) → PUBLISHED|PUBLISH_FAILED；同一 chunk_id 重试不产生重复向量"
+      parameters: [{name: queue_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [standard_answer, catalog_category_id, rule_source], properties: {standard_answer: {type: string}, catalog_category_id: {type: string}, rule_source: {type: string}, effective_from: {type: integer}, effective_to: {type: integer}}}}}
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/PendingItem"}}}}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
+  /api/v1/kb/pending/{queue_id}/retry:
+    post:
+      summary: 对 PUBLISHING/PUBLISH_FAILED 条目重试发布（沿用已保存的答案草稿，chunk_id 不变）
+      parameters: [{name: queue_id, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/PendingItem"}}}}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
+  /internal/v1/faults:
+    post:
+      summary: "故障注入，仅 ECOMOPS_ENABLE_FAULTS=1：{publish_writeback_fail: bool, llm_fail: [task]}"
+      security: [{internal: []}]
+      requestBody:
+        content: {application/json: {schema: {type: object}}}
+      responses: {"200": {description: ok}}
+  /api/v1/listing/reviews:
+    post:
+      summary: "上传商品详情页 PDF 并合规审查（multipart: file, declared_category）"
+      requestBody:
+        required: true
+        content: {multipart/form-data: {schema: {type: object, required: [file, declared_category], properties: {file: {type: string, format: binary}, declared_category: {type: string}}}}}
+      responses:
+        "201": {description: created, content: {application/json: {schema: {$ref: "#/components/schemas/ListingReport"}}}}
+        "400": {$ref: "#/components/responses/Err"}
+    get:
+      responses: {"200": {description: ok, content: {application/json: {schema: {type: object, required: [reviews], properties: {reviews: {type: array, items: {$ref: "#/components/schemas/ListingReport"}}}}}}}}
+  /api/v1/listing/reviews/{review_id}:
+    get:
+      parameters: [{name: review_id, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/ListingReport"}}}}
+        "404": {$ref: "#/components/responses/Err"}
+  /api/v1/training/sessions:
+    post:
+      requestBody:
+        content: {application/json: {schema: {type: object, properties: {scenario_seed: {type: object}}}}}
+      responses:
+        "201": {description: created, content: {application/json: {schema: {type: object, required: [session_id, stage], properties: {session_id: {type: string}, stage: {type: string}, scenario_seed: {type: object}}}}}}
+  /api/v1/training/sessions/{session_id}:
+    get:
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: object, required: [session_id, stage, status], properties: {session_id: {type: string}, stage: {type: string}, status: {type: string}, follow_up_count: {type: integer}, messages: {type: array, items: {type: object}}, report: {type: object, nullable: true}}}}}}
+        "404": {$ref: "#/components/responses/Err"}
+  /api/v1/training/sessions/{session_id}/chat/stream:
+    post:
+      summary: "SSE：event: token | stage | report | done | error"
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [message], properties: {message: {type: string}}}}}
+      responses:
+        "200": {description: text/event-stream, content: {text/event-stream: {schema: {type: string}}}}
+        "404": {$ref: "#/components/responses/Err"}
+        "422": {$ref: "#/components/responses/Err"}
