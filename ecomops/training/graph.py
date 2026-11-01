@@ -1,9 +1,11 @@
 """Customer training workflow; the session table is the query projection."""
 import json
 import re
+from contextlib import aclosing
 from decimal import Decimal
 from typing import TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from ecomops.core import llm, rag
@@ -13,6 +15,7 @@ from ecomops.training import service
 
 
 class State(TypedDict, total=False):
+    streaming: bool
     session_id: str
     tenant_id: str
     user_id: str
@@ -84,6 +87,9 @@ def advance_or_keep(state):
         data['follow_up_count'] = 0
     else:
         data['follow_up_count'] += 1
+    if state.get('streaming'):
+        get_stream_writer()(("stage", {"stage": data["stage"], "advanced": advanced,
+                                     "follow_up_count": data["follow_up_count"]}))
     return {'data': data, 'advanced': advanced}
 
 
@@ -96,6 +102,26 @@ async def generate_response(state):
         system = (f'你是挑剔的电商买家，当前阶段：{data["stage"]}。只输出买家回复，不评分、不改变阶段。'
                   f'{llm.DATA_NOTICE}\n场景种子：{llm.untrusted("scenario_seed", json.dumps(data["scenario_seed"], ensure_ascii=False))}'
                   f'\n本次要求：{challenge or "针对当前阶段追问"}；同一争议点最多追问两次。')
+        if state.get('streaming'):
+            writer = get_stream_writer()
+            generated = ''
+            try:
+                async with aclosing(llm.stream(system, llm.untrusted('agent_reply', state['message']))) as deltas:
+                    async for delta in deltas:
+                        if delta:
+                            generated += delta
+                            writer(("token", {"text": delta}))
+                if not generated.strip():
+                    raise llm.LlmError("empty reply")
+            except llm.LlmError:
+                if generated:
+                    writer(("token", {"reset": True}))
+                for segment in service.reply_segments(reply + challenge):
+                    writer(("token", {"text": segment}))
+                return {'reply': reply + challenge, 'fallback_used': True}
+            if challenge:
+                writer(("token", {"text": challenge}))
+            return {'reply': generated + challenge, 'fallback_used': False}
         try:
             result = await llm.complete(system, llm.untrusted('agent_reply', state['message']))
             if isinstance(result, str) and result.strip():

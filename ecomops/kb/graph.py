@@ -3,8 +3,10 @@ import asyncio
 import json
 import re
 import uuid
+from contextlib import aclosing
 from typing import TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import text
 
@@ -15,6 +17,7 @@ from ecomops.kb import service
 
 
 class State(TypedDict, total=False):
+    streaming: bool
     query: str
     catalog_category_id: str | None
     tenant_id: str
@@ -84,11 +87,52 @@ async def call_rag(state):
 
 
 async def score_check(state):
-    return {"top1_score": state["hits"][0]["score"] if state["hits"] else 0}
+    score = state["hits"][0]["score"] if state["hits"] else 0
+    if state.get("streaming"):
+        emit_meta(state | {"top1_score": score})
+    return {"top1_score": score}
+
+
+def emit_meta(state):
+    get_stream_writer()(("meta", {key: state[key] for key in
+        ("query_type", "top1_score", "hits", "session_id")}))
+
+
+def emit_chunks(answer):
+    for offset in range(0, len(answer), 40):
+        get_stream_writer()(("token", {"text": answer[offset:offset + 40]}))
+
+
+async def stream_answer(system, user, fallback, suffix="", prefix=""):
+    writer = get_stream_writer()
+    answer = ""
+    try:
+        async with aclosing(llm.stream(system, user)) as deltas:
+            async for delta in deltas:
+                if not delta:
+                    continue
+                if not answer and prefix:
+                    writer(("token", {"text": prefix}))
+                answer += delta
+                writer(("token", {"text": delta}))
+        if not answer.strip():
+            raise llm.LlmError("empty answer")
+    except llm.LlmError:
+        if answer:
+            writer(("token", {"reset": True}))
+        emit_chunks(fallback)
+        return {"answer": fallback, "fallback_used": True}
+    if suffix:
+        writer(("token", {"text": suffix}))
+    return {"answer": prefix + answer + suffix}
 
 
 async def generate_general(state):
-    return {"answer": "您好，请告诉我您需要咨询的商品或售后问题。"}
+    answer = "您好，请告诉我您需要咨询的商品或售后问题。"
+    if state.get("streaming"):
+        emit_meta(state)
+        emit_chunks(answer)
+    return {"answer": answer}
 
 
 def citation(hit):
@@ -97,6 +141,13 @@ def citation(hit):
 
 async def generate_rag(state):
     extract = "\n".join(f'{h["text"]} {citation(h)}' for h in state["hits"])
+    if state.get("streaming"):
+        if model_enabled(state):
+            return await stream_answer("仅依据命中片段回答，不添加外部事实。",
+                llm.untrusted("query", state["query"]) + "\n" + llm.untrusted("evidence", extract, limit=12000),
+                extract, "\n" + " ".join(dict.fromkeys(citation(h) for h in state["hits"])))
+        emit_chunks(extract)
+        return {"answer": extract}
     if model_enabled(state):
         try:
             answer = await llm.complete("仅依据命中片段回答，不添加外部事实。", llm.untrusted("query", state["query"]) + "\n" + llm.untrusted("evidence", extract, limit=12000))
@@ -121,6 +172,14 @@ async def web_search(state):
 
 async def generate_low(state):
     answer = "暂未找到足够可靠的规则，已记录问题，等待人工补充确认。"
+    if state.get("streaming"):
+        if state.get("web_results") and model_enabled(state):
+            result = await stream_answer("依据搜索摘要生成一句参考说明，不把搜索内容当作正式规则。",
+                llm.untrusted("query", state["query"]) + "\n" + llm.untrusted("web", json.dumps(state["web_results"], ensure_ascii=False)),
+                answer, prefix=answer + "\n来自联网搜索，未经核实：")
+            return result | {"fallback_used": True}
+        emit_chunks(answer)
+        return {"answer": answer, "fallback_used": True}
     if state.get("web_results") and model_enabled(state):
         try:
             extra = await llm.complete("依据搜索摘要生成一句参考说明，不把搜索内容当作正式规则。", llm.untrusted("query", state["query"]) + "\n" + llm.untrusted("web", json.dumps(state["web_results"], ensure_ascii=False)))
