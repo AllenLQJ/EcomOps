@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy import text
 
 from ecomops.core import llm, rag, websearch
+from ecomops.core.config import get_settings
 from ecomops.core.db import get_engine
 from ecomops.core.errors import ApiError
 from ecomops.kb import service
@@ -35,8 +36,17 @@ class State(TypedDict, total=False):
     enqueued_queue_id: str | None
 
 
+def refined_query_type(query: str) -> str:
+    """规则先判；规则只给出兜底的 VAGUE 时，才让训练出来的分类器细分（规则明确判出的类型永远不被覆盖）。"""
+    kind = service.classify_query(query)
+    if get_settings().query_classifier.lower() == "on":
+        from ecomops.kb import classifier
+        kind, _source = classifier.refine(kind, query)
+    return kind
+
+
 async def classify_query(state):
-    return {"query_type": service.classify_query(state["query"]), "queries": [state["query"]],
+    return {"query_type": refined_query_type(state["query"]), "queries": [state["query"]],
             "hits": [], "top1_score": 0, "degraded": False,
             "fallback_used": llm.should_fail("kb_answer"), "enqueued_queue_id": None}
 

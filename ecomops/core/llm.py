@@ -132,6 +132,7 @@ async def stream(system: str, user: str, *, max_tokens: int = 600, temperature: 
                                      headers={"Authorization": f"Bearer {s.llm_api_key}"}) as r:
                 if r.status_code != 200:
                     raise LlmError(f"llm status {r.status_code}")
+                finished = False
                 async for line in r.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -139,10 +140,15 @@ async def stream(system: str, user: str, *, max_tokens: int = 600, temperature: 
                     if payload == "[DONE]":
                         return
                     try:
-                        delta = json.loads(payload)["choices"][0].get("delta", {}).get("content")
+                        choice = json.loads(payload)["choices"][0]
+                        delta = choice.get("delta", {}).get("content")
+                        finished = finished or choice.get("finish_reason") is not None
                     except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
                         raise LlmError("unexpected llm stream chunk") from exc
                     if isinstance(delta, str) and delta:
                         yield delta
+                if not finished:
+                    # 既没有 [DONE] 也没有带 finish_reason 的收尾块：连接被提前切断，不能当成完整回答
+                    raise LlmError("llm stream ended early")
     except httpx.HTTPError as exc:
         raise LlmError(f"llm stream failed: {type(exc).__name__}") from exc

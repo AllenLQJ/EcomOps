@@ -205,3 +205,20 @@ async def test_stream_connection_error_has_no_url(env, monkeypatch):
     with pytest.raises(llm.LlmError) as info:
         await collect(llm.stream("s", "u"))
     assert "llm.test" not in str(info.value)
+
+
+async def test_stream_truncated_without_done_or_finish_reason_is_an_error_after_the_partial_output(env, monkeypatch):
+    env(llm_base_url="https://llm.test/v1", llm_api_key="k", llm_model="m")
+    mock_http(monkeypatch, llm, lambda r: httpx.Response(200, content=sse("前", "半", done=False)))
+    got = []
+    with pytest.raises(llm.LlmError) as info:
+        async for piece in llm.stream("s", "u"):
+            got.append(piece)
+    assert got == ["前", "半"] and "early" in str(info.value)
+
+
+async def test_stream_without_done_is_fine_when_a_finish_reason_chunk_arrived(env, monkeypatch):
+    env(llm_base_url="https://llm.test/v1", llm_api_key="k", llm_model="m")
+    raw = sse("好", done=False) + b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+    mock_http(monkeypatch, llm, lambda r: httpx.Response(200, content=raw))
+    assert await collect(llm.stream("s", "u")) == ["好"]

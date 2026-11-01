@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     llm_timeout_s: float = 8.0
+    query_classifier: str = "on"           # on|off：规则判成兜底 VAGUE 时，是否再用训练出来的分类器细分（见 ecomops/kb/classifier.py）
     web_search: str = "off"                # off|on：联网搜索总开关（低置信且开启时才搜），默认关闭
     tavily_key: str = ""                   # 配置则先用 Tavily，失败/未配置再回退 DuckDuckGo
     web_search_timeout_s: float = 5.0
