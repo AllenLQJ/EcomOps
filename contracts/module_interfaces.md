@@ -36,3 +36,37 @@
 - 创建会话（cs_agent/operator/supervisor）：`scenario_seed` 缺省用内置（热水器漏水）；阶段序列 `verify_order → empathy_listen → policy_explain → solution_negotiate → finished`。
 - `chat/stream`（SSE：`event: token`（逐段）、`event: stage`（`{"stage","advanced","follow_up_count"}`）、`event: report`（结束时）、`event: done`）：`evaluate_answer` 按当前阶段关键词判定达成（verify：含订单号/手机尾号/姓名等核实词；empathy：含"抱歉/理解/着急"等且不被误杀；policy：引用条款词"7天/15天/质量问题/退换/运费"；negotiate：含具体方案词"退款/换货/补偿/补发"）。未达成且 `follow_up_count<2` → 保持阶段、`follow_up_count+=1`；达成或追问满 2 次 → 推进并清零。第 4 阶段完成 → `finished`，生成报告（规则准确度/情绪安抚力/方案合规度，0~100 整数）写入 `report` 与 `status='FINISHED'`。已结束会话再发消息→422 INVALID_STAGE。会话只能被创建者（同租户同用户）访问，否则 404。
 - 记忆：每轮先把本轮 AI 回复追加进完整 `messages`，再判断 `len(messages) % 20 == 0` 触发摘要（偶数轮精准），**无论是否摘要，每轮都 UPSERT 保存最新状态**。
+
+## 7. claim_audit 行为规格（统筹实现；Cursor 验收依据）
+
+**提交**：`POST /internal/v1/claims/submit` 按 `claim_no` 幂等（重复提交返回 202 + `idempotent_replayed=true`，不重复启动审核）。同步跑到图的下一个停靠点（auto 终态 / 自动驳回 / 补材料 / 挂起 interrupt / 已批准待回调），响应 `{claim_no, status}` 为该时刻的 `claim_status`。**退款回调不在 submit 请求内同步执行**，而由出箱 worker 异步完成（立即触发 + 周期扫描）。
+
+**三轨**（asyncio.gather 并发）：
+- RULE：`passed = days_since_delivery <= 15`；detail 含 `window_days=15`。
+- EVIDENCE：质量关键词（漏水/打不着火/不制热/坏了/破损/故障/质量/变质）命中 `quality_claim`；`evidence_ok = len(evidence_urls) >= 1`；`confidence = 0.5 + 0.3*quality_claim + 0.2*evidence_ok`；`passed = quality_claim and evidence_ok`；`evidence_missing = quality_claim and not evidence_ok`。`llm.should_fail("evidence_track")` → 该轨 `fallback_used=True, confidence=0, passed=false`。
+- FEE：`suggested_refund_cents = min(item_payable_cents, max_refundable_cents)`；`restock_policy = DEFECTIVE_WAREHOUSE if quality_claim else SELLABLE_WAREHOUSE`；`passed=true`。
+- 工单 `fallback_used` = 任一轨降级；`confidence` 取 EVIDENCE 轨。
+
+**路由**（按序）：
+1. RULE 不通过 且 非（quality_claim 且 evidence_ok）→ `AUTO_REJECTED`。
+2. `evidence_missing` → `NEED_MORE_EVIDENCE`。
+3. `suggested ≤ 5000` 且三轨全 passed 且 `confidence ≥ 0.85` 且 `fallback_used=False` → 自动批准：写 `claim_approvals(action=AUTO_APPROVE)` 与 `outbox_events`（同一事务）→ `APPROVED_PENDING_CALLBACK`，`risk_level=LOW`。
+4. 其余 → `PENDING_SUPERVISOR_REVIEW`（LangGraph `interrupt()`，检查点落 PostgreSQL），`risk_level=HIGH`，`route_reason` 写明原因（大额/低置信/降级/规则冲突）。
+示例：热水器 112000 分 + 漏水原因 + 1 张凭证 + 签收 5 天 → 三轨通过但金额>5000 → 挂起主管复核。
+
+**主管决定** `POST /api/v1/claims/{claim_no}/confirm`（仅 supervisor，租户内）：
+- `APPROVE` → 金额取 `suggested_refund_cents`；`MODIFY_AMOUNT` → 必须 `0 < amount_cents <= max_refundable_cents` 否则 422 AMOUNT_EXCEEDS_LIMIT；二者在**同一事务**写 `claim_approvals` + `outbox_events`（`refund_idempotency_key = "REFUND_"+claim_no+"_V1"`，payload 即 Pilot `refunds/execute` 请求体）并置 `APPROVED_PENDING_CALLBACK`（`approved_refund_cents` 同步写入）。
+- `REJECT` → `SUPERVISOR_REJECTED`；`REQUEST_EVIDENCE` → `NEED_MORE_EVIDENCE`。
+- 状态非 `PENDING_SUPERVISOR_REVIEW`：若请求决定与已记录的最近一次主管决定**相同**（action 相同，MODIFY_AMOUNT 还需金额相同）→ 200 `idempotent_replayed=true`；否则 409 CLAIM_STATE_CONFLICT。并发两次相同批准：恰好一条 approvals、一条 outbox。
+- 非 supervisor → 403 FORBIDDEN_ROLE；他租户工单 → 404。
+- 恢复（`Command(resume=...)`）从 AsyncPostgresSaver 读取挂起状态；**EcomOps 进程被 SIGKILL 重启后仍可 confirm**。
+
+**补材料/撤回**（内部接口）：`evidence` 仅在 `NEED_MORE_EVIDENCE` 有效（否则 409）→ 追加 evidence_urls、`audit_round+=1`、重新三轨审核（新线程 `claim_no:r<round>`）并重新路由；`withdraw` 在 `NEED_MORE_EVIDENCE|PENDING_SUPERVISOR_REVIEW` 有效 → `WITHDRAWN`。
+
+**回调与对账（Outbox）**：worker 取 `PENDING|PENDING_RETRY` 且 `next_retry_at<=now` 的事件，`FOR UPDATE SKIP LOCKED`，对**每个事件**：先 `GET {pilot}/internal/v1/refunds/status?refund_idempotency_key=`（`SUCCESS` → 直接 DONE，不再 POST）；`NOT_FOUND` 或首次 → `POST {pilot}/internal/v1/refunds/execute`（超时 `refund_callback_timeout_seconds`）；成功（200 且 `execution_status=SUCCESS`）→ 事件 `DONE`、工单 `COMPLETED`；超时/连接错/5xx → 事件 `PENDING_RETRY`（`attempts+=1`，`next_retry_at=now+backoff`）、工单 `CALLBACK_RETRYING`；`attempts >= outbox_max_attempts` → 事件 `FAILED_MANUAL`、工单 `CALLBACK_FAILED_MANUAL`；Pilot 返回 4xx（业务拒绝）→ 直接 `FAILED_MANUAL`。后台协程每 `reconcile_interval_seconds` 扫描；`POST /internal/v1/outbox/run-once` 立即扫描一次。**无论回调是否超时，Pilot 的 refund_executions 对同一 key 只有 1 条。**
+
+**终态通知（best-effort）**：`AUTO_REJECTED/SUPERVISOR_REJECTED/WITHDRAWN` 时写 `outbox_events(event_type='CLAIM_RESULT', refund_idempotency_key="RESULT_"+claim_no+"_"+status)`，worker 调 `POST {pilot}/internal/v1/aftersales/{claim_no}/result {"result":"REJECTED"|"WITHDRAWN"}`（Pilot 侧由统筹补充实现，使订单恢复 FULFILLED）。
+
+**查询**：`GET /api/v1/claims`（supervisor/operator，`status` 过滤）、`GET /api/v1/claims/{claim_no}`（含 tracks/approvals/outbox）。
+**故障注入**：`POST /internal/v1/faults`（`ECOMOPS_ENABLE_FAULTS=1`）`{"llm_fail": ["evidence_track"], "publish_writeback_fail": true}`；`{}` 清空。
+**开发令牌**：`ECOMOPS_DEV_TOKENS=1` 时 `POST /api/v1/dev/token {user_id, role, tenant_id?}`。
