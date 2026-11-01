@@ -205,3 +205,11 @@ def test_stuck_callback_listed_but_not_actionable(env, monkeypatch):
     stuck = wait_for(lambda: [a for a in alerts(c, "OPEN") if a["type"] == "CALLBACK_STUCK"])
     assert stuck[0]["alert_id"] == "stuck:ST1" and stuck[0]["claim_no"] == "ST1"
     assert c.post("/api/v1/alerts/stuck:ST1/resolve", json={"reason": "尝试处理卡住项"}, headers=H()).status_code == 404
+
+
+def test_metrics_expose_outbox_backlog_and_open_alerts(env):
+    c, _ = env
+    failed_claim(c)
+    text = c.get("/metrics").text
+    assert 'ecomops_outbox_events{status="FAILED_MANUAL"} 1.0' in text
+    assert "ecomops_open_alerts 1.0" in text

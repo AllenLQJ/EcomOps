@@ -19,3 +19,4 @@ openapi-spec-validator==0.7.1
 reportlab
 greenlet
 pymysql
+prometheus-client==0.21.1

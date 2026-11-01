@@ -13,7 +13,7 @@ from ecomops.alerts import service as alert_service
 from ecomops.alerts.router import router as alerts_router
 from ecomops.claims import graph as claim_graph
 from ecomops.claims.router import router as claims_router
-from ecomops.core import llm
+from ecomops.core import hardening, llm, observability
 from ecomops.core.auth import issue_token, require_internal
 from ecomops.core.config import get_settings
 from ecomops.core.db import dispose_engines, make_pool
@@ -23,6 +23,7 @@ from ecomops.outbox import worker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    hardening.enforce(get_settings())
     pool = make_pool()
     await pool.open()
     saver = AsyncPostgresSaver(pool)
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="EcomOps", lifespan=lifespan)
 install_error_handlers(app)
+observability.install(app)
 app.include_router(claims_router)
 app.include_router(alerts_router)
 for _mod in ("ecomops.kb.router", "ecomops.listing.router", "ecomops.training.router"):
