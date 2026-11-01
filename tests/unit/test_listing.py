@@ -15,7 +15,7 @@ from ecomops.core.storage import LocalStore
 from ecomops.listing.checkers import extract_pdf, extract_structure, review_document
 from ecomops.listing.router import router
 
-HEATER = '品名：储水式热水器\n额定功率：2000W\n容量：60L\n能效等级：一级\n3C：20241234567890'
+HEATER = '品名：储水式热水器\n额定功率：2000W\n容量：60L\n能效等级：一级\n3C：2024123456789012'
 SHAMPOO = '品名：洗发水\n净含量：500ml\n保质期：三年\n备案号：粤妆网备字2024123456'
 
 
@@ -59,7 +59,7 @@ CASES = [
     (SHAMPOO + '\n治疗头皮问题', 'PERSONAL_SHAMPOO', 'REJECTED_BLOCKING'),
     (SHAMPOO + '\n防脱', 'PERSONAL_SHAMPOO', 'REJECTED_BLOCKING'),
     (HEATER.replace('能效等级：一级\n', ''), 'HOME_APPLIANCE_HEATER', 'REJECTED_BLOCKING'),
-    (HEATER.replace('20241234567890', 'ABC'), 'HOME_APPLIANCE_HEATER', 'PENDING_MANUAL_VERIFY'),
+    (HEATER.replace('2024123456789012', 'ABC'), 'HOME_APPLIANCE_HEATER', 'PENDING_MANUAL_VERIFY'),
     (HEATER, 'HOME_APPLIANCE_HEATER', 'PASSED_WITH_SUGGESTIONS'),
     (SHAMPOO, 'PERSONAL_SHAMPOO', 'PASSED_WITH_SUGGESTIONS'),
     ('品名：毛巾\n规格：一条', 'DAILY_GENERAL', 'PASSED_WITH_SUGGESTIONS'),

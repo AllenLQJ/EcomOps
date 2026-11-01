@@ -12,8 +12,8 @@ lock = threading.Lock()
 chunks: dict[str, dict] = {}
 state = {"mode": "none"}
 DEMOS = [
-    dict(chunk_id="demo-heater", text="热水器质量问题15天内可退换，质量问题退换运费由商家承担。", rule_source="沙盒热水器退换规则", is_demo_rule=True, catalog_category_id="HOME_APPLIANCE_HEATER"),
-    dict(chunk_id="demo-seven", text="7天无理由退货需商品完好，非质量问题运费由买家承担。", rule_source="沙盒7天无理由规则", is_demo_rule=True, catalog_category_id=None),
+    dict(chunk_id="demo-heater", text="热水器质量问题15天内可退换，质量问题退换运费由商家承担。", rule_source="沙盒热水器退换规则", is_demo_rule=True, catalog_category_id="HOME_APPLIANCE_HEATER", keywords=("热水器", "退换", "漏水", "质量", "运费", "退货", "15天")),
+    dict(chunk_id="demo-seven", text="7天无理由退货需商品完好，非质量问题运费由买家承担。", rule_source="沙盒7天无理由规则", is_demo_rule=True, catalog_category_id=None, keywords=("7天", "无理由", "退货", "运费", "完好")),
 ]
 
 
@@ -54,6 +54,9 @@ def search(body: Search):
         score = len(q & tokens(c["text"])) / max(1, len(q))
         if query and query in c["text"]:
             score = 0.95
+        matched = sum(1 for k in c.get("keywords", ()) if k in query)
+        if matched >= 2:   # 沙箱演示规则：命中 2 个以上关键词视为高置信
+            score = max(score, min(0.95, 0.7 + 0.05 * matched))
         if score:
             hits.append({k: c[k] for k in ("chunk_id", "text", "rule_source", "is_demo_rule")} | {"score": round(score, 4)})
     return {"hits": sorted(hits, key=lambda h: (-h["score"], h["chunk_id"]))[:body.top_k]}

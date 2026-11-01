@@ -61,8 +61,8 @@ def check(name: str, document: dict, category: str) -> dict:
     elif name == "cert_extract":
         for cert in document["certificates"]:
             kind = cert["kind"]
-            # 简化格式：3C 编号为 4+10 位数字；备案号为省份前缀+妆网备字+10位数字；质检报告号为6~32位字母数字/横线。
-            pattern = r"\d{14}" if kind.startswith("3C") else (r"[一-龥]{1,3}妆网备字\d{10}" if kind == "备案号" else r"[A-Za-z0-9-]{6,32}")
+            # 简化格式：3C 编号为 16 位数字；备案号为省份前缀+妆网备字+10位数字；质检报告号为6~32位字母数字/横线。
+            pattern = r"\d{16}" if kind.startswith("3C") else (r"[一-龥]{1,3}妆网备字\d{10}" if kind == "备案号" else r"[A-Za-z0-9-]{6,32}")
             if not re.fullmatch(pattern, cert["number"]):
                 result["manual_verify_items"].append({"checker": name, **cert, "message": "编号格式存疑，请核验证书原件"})
     else:
