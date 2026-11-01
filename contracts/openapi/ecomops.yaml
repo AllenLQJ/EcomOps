@@ -116,6 +116,14 @@ paths:
         "202": {description: accepted}
         "404": {$ref: "#/components/responses/Err"}
         "409": {$ref: "#/components/responses/Err"}
+  /internal/v1/claims/{claim_no}/status:
+    get:
+      summary: "买家可见的最小状态（供 EcomPilot 查询进度；不含审核细节）"
+      security: [{internal: []}]
+      parameters: [{name: claim_no, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: object, required: [claim_no, claim_status, audit_round, needs_evidence, evidence_count], properties: {claim_no: {type: string}, claim_status: {type: string}, audit_round: {type: integer}, needs_evidence: {type: boolean}, evidence_count: {type: integer}}}}}}
+        "404": {$ref: "#/components/responses/Err"}
   /internal/v1/claims/{claim_no}/withdraw:
     post:
       summary: 买家撤回

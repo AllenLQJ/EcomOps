@@ -55,6 +55,11 @@ async def evidence(claim_no: str, body: EvidenceIn, request: Request):
     return out
 
 
+@router.get("/internal/v1/claims/{claim_no}/status", dependencies=[Depends(require_internal)])
+async def claim_status(claim_no: str):
+    return await service.public_status(claim_no)
+
+
 @router.post("/internal/v1/claims/{claim_no}/withdraw", dependencies=[Depends(require_internal)])
 async def withdraw(claim_no: str):
     out = await service.withdraw(claim_no)

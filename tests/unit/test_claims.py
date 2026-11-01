@@ -215,3 +215,17 @@ def test_checkpoint_survives_app_restart(db_name, monkeypatch):
         r = c2.post("/api/v1/claims/R1/confirm", json={"action": "APPROVE"}, headers=H())
         assert r.status_code == 200 and r.json()["claim_status"] == "APPROVED_PENDING_CALLBACK"
     config.get_settings.cache_clear()
+
+
+def test_internal_status_is_minimal_and_requires_token(env):
+    c, _ = env
+    c.post("/internal/v1/claims/submit", json=payload("ST1"), headers=INT)
+    assert c.get("/internal/v1/claims/ST1/status").status_code == 401
+    r = c.get("/internal/v1/claims/ST1/status", headers=INT)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"claim_no", "claim_status", "audit_round", "needs_evidence", "evidence_count"}
+    assert body["needs_evidence"] is False
+    c.post("/api/v1/claims/ST1/confirm", json={"action": "REQUEST_EVIDENCE"}, headers=H())
+    assert c.get("/internal/v1/claims/ST1/status", headers=INT).json()["needs_evidence"] is True
+    assert c.get("/internal/v1/claims/NOPE/status", headers=INT).status_code == 404

@@ -108,6 +108,16 @@ async def add_evidence(graph, claim_no: str, urls: list[str]) -> dict:
     return {"claim_no": claim_no, "status": await status_of(claim_no)}
 
 
+async def public_status(claim_no: str) -> dict:
+    """买家侧可见的最小状态（不含审核细节）；供 EcomPilot 查询。"""
+    async with get_engine().connect() as c:
+        t = await repo.get_ticket(c, claim_no)
+    if not t:
+        raise ApiError(404, "NOT_FOUND", "claim not found")
+    return {"claim_no": claim_no, "claim_status": t["claim_status"], "audit_round": t["audit_round"],
+            "needs_evidence": t["claim_status"] == "NEED_MORE_EVIDENCE", "evidence_count": len(t["evidence_urls"] or [])}
+
+
 async def withdraw(claim_no: str) -> dict:
     async with claim_lock(claim_no):
         async with get_engine().begin() as c:
