@@ -44,15 +44,32 @@ def extract_structure(text: str) -> dict:
             "certificates": certificates, "text": text}
 
 
+# 否定语境："不是最好的""没有第一""不宣称国家级""不能根治疾病"——违规词紧挨着否定词时不算宣称。
+# 只看违规词前面紧邻的几个字，而且必须"否定词（+ 宣称/保证/能/会/有/是/属于/支持）"正好结尾：
+# "不骗你，全网最低价"（否定词和违规词之间隔着逗号和别的词）、"不仅是最好的"（不是否定宣称）仍然算违规。
+NEGATION_BEFORE = re.compile(r"(?:不|没有|无|非|并非|未|不能|不会|不得|不可|不应|不允许)"
+                             r"(?:宣称|保证|承诺|声称|能|会|有|是|属于|支持|提供)?$")
+
+
+def violating_terms(text: str, words: tuple[str, ...]) -> list[str]:
+    """返回至少有一处"非否定"出现的违规词。"""
+    found = []
+    for word in words:
+        for match in re.finditer(re.escape(word), text):
+            if not NEGATION_BEFORE.search(text[max(0, match.start() - 6):match.start()]):
+                found.append(word)
+                break
+    return found
+
+
 def check(name: str, document: dict, category: str, structured: dict | None = None) -> dict:
     result = {"checker": name, "fallback_used": llm.should_fail(name),
               "blocking_violations": [], "manual_verify_items": [], "advisory_suggestions": []}
     text = document["text"]
     if name in ("extreme_words", "medical_claims"):
         words = ("最", "第一", "国家级", "100%", "永久", "根治") if name == "extreme_words" else ("防脱", "生发", "治疗", "治愈")
-        for word in words:
-            if word in text:
-                result["blocking_violations"].append({"checker": name, "term": word, "message": f"命中违规宣称：{word}"})
+        for word in violating_terms(text, words):
+            result["blocking_violations"].append({"checker": name, "term": word, "message": f"命中违规宣称：{word}"})
     elif name == "required_params":
         for field in REQUIRED_PARAMS.get(category, ("品名",)):
             # 标签必须有非空值；仅在宣传句中出现参数名不算参数表。
