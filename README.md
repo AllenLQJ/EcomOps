@@ -56,3 +56,12 @@ RAG_INTERNAL_TOKEN=<同一个令牌> scripts/start_with_ecomrag.sh
 # 需要 EcomPilot 与 EcomOps 是同级目录；密钥见 deploy/.env.example
 docker compose -f deploy/docker-compose.full.yml up -d --build
 ```
+
+
+## 工作流、评测与存储（补充）
+
+- 四条 LangGraph 工作流（售后审核 / 知识问答 / 合规审查 / 客服对练）共用同一个 `AsyncPostgresSaver`，约定见 `contracts/module_interfaces.md` 第 8 节。
+- 可选的真实 LLM：`ECOMOPS_LLM_BASE_URL` / `ECOMOPS_LLM_API_KEY` / `ECOMOPS_LLM_MODEL` 三项都配才联网；联网搜索 `ECOMOPS_WEB_SEARCH=on`（默认关）。两者都只做了 mock 测试。
+- 离线评测：`python scripts/offline_eval.py [--rag-url http://127.0.0.1:8010 --rag-token <令牌>] [--out docs/离线评测报告.md]`。
+- 超时未补材料自动撤回：`ECOMOPS_EVIDENCE_DEADLINE_HOURS`（默认 72）。
+- 测试依赖：`pip install -r requirements-dev.txt`（含 S3 仿真服务 moto，用于验证 MinIO 后端）。

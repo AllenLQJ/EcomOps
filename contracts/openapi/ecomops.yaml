@@ -61,6 +61,15 @@ components:
         advisory_suggestions: {type: array, items: {type: object}}
         fallback_used: {type: boolean}
         pdf_object_path: {type: string}
+        scenario_seed:
+          type: object
+          description: 供 cs_training 开课的场景种子卡（阻断项/待核实项的争议点，最多 5 条）
+          properties:
+            product_title: {type: string}
+            declared_category: {type: string}
+            buyer_persona: {type: string}
+            disputes: {type: array, maxItems: 5, items: {type: object, required: [point, kind, detail], properties: {point: {type: string}, kind: {type: string, enum: [blocking, manual]}, detail: {}}}}
+            opening_message: {type: string}
   responses:
     Err: {description: error, content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
 security: [{bearer: []}]
@@ -216,6 +225,19 @@ paths:
                   hits: {type: array, items: {type: object}}
                   enqueued_queue_id: {type: string, nullable: true}
                   session_id: {type: string}
+  /api/v1/kb/ask/stream:
+    post:
+      summary: "kb_qa 流式问答（SSE）。先跑完整张图再推流，所以越权 404 / 上游失败 502 是真正的 HTTP 错误；token 事件是对最终回答的分片，不是模型逐 token"
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [query], properties: {query: {type: string}, catalog_category_id: {type: string}, session_id: {type: string}}}}}
+      responses:
+        "200":
+          description: "text/event-stream：meta{query_type,top1_score,hits,session_id} → token{text}* → done{answer,fallback_used,enqueued_queue_id}"
+          content: {text/event-stream: {schema: {type: string}}}
+        "401": {$ref: "#/components/responses/Err"}
+        "404": {$ref: "#/components/responses/Err"}
+        "502": {$ref: "#/components/responses/Err"}
   /api/v1/kb/pending:
     get:
       parameters: [{name: status, in: query, schema: {type: string}}]
@@ -273,9 +295,11 @@ paths:
   /api/v1/training/sessions:
     post:
       requestBody:
-        content: {application/json: {schema: {type: object, properties: {scenario_seed: {type: object}}}}}
+        content: {application/json: {schema: {type: object, description: "scenario_seed 与 from_listing_review_id 二选一，同时给 → 400", properties: {scenario_seed: {type: object}, from_listing_review_id: {type: string, format: uuid, description: "用该合规审查报告的 scenario_seed 开课；不存在/他租户 → 404"}}}}}
       responses:
         "201": {description: created, content: {application/json: {schema: {type: object, required: [session_id, stage], properties: {session_id: {type: string}, stage: {type: string}, scenario_seed: {type: object}}}}}}
+        "400": {$ref: "#/components/responses/Err"}
+        "404": {$ref: "#/components/responses/Err"}
   /api/v1/training/sessions/{session_id}:
     get:
       parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
