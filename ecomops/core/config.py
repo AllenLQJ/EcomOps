@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     enable_faults: bool = False
     reconcile_interval_seconds: float = 30.0
     outbox_max_attempts: int = 10
+    evidence_deadline_hours: float = 72.0   # 买家超过该时长未补材料 -> 自动撤回（WITHDRAWN），订单由 Pilot 恢复为 FULFILLED
     llm_base_url: str = ""                 # OpenAI 兼容接口（含 /v1 或 /api/paas/v4）；三项都配置才启用真实 LLM
     llm_api_key: str = ""
     llm_model: str = ""

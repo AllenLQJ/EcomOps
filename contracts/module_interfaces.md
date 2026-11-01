@@ -87,3 +87,9 @@
 - 买家/客服/PDF 原文进提示词时必须用 `llm.untrusted(label, text)` 包进定界标签。
 - 共享件：`ecomops/core/llm.py` 的 `complete()`、`ecomops/core/rag.py` 的 `search()`（失败返回 `None`，调用方决定降级）、`ecomops/core/websearch.py` 的 `search()`（默认关闭，仅低置信且开关为 on 时调用）。
 - 流式接口（SSE）统一事件格式：`event: <name>\ndata: <json>\n\n`，与 `training` 路由的 `event()` 一致。
+
+### 7.x 增补：条款参与三轨、超时撤回、驳回原因、撤回后重新申请
+- **条款参与三轨**：`load_order_and_policy` 用 `rag.search` 检索条款（有 Pilot 商品快照时把品类名拼进检索词）。≥0.75 分的条款里，只有"明确讲质量问题的句子"（含"质量"，且不含"非质量""无理由"，并含退换/退货/退款与 `N 天`，N∈[1,90]）才能改变 RULE 轨的时效窗口，解析不到沿用 15 天；RULE、FEE 两轨的 `detail.policy_clauses` 记录引用的条款（来源/版本/分数/是否沙盒）。检索失败不影响审核。
+- **超时未补材料自动撤回**：`ECOMOPS_EVIDENCE_DEADLINE_HOURS`（默认 72）。`NEED_MORE_EVIDENCE` 超期且仍未补 → `WITHDRAWN`（`route_reason` 写明原因）+ `CLAIM_RESULT{result:WITHDRAWN, reason}` 出箱事件回写 Pilot。每张工单在 `claim_lock` 内复核，和买家补材料/撤回不会竞争。
+- **驳回原因**：`CLAIM_RESULT` 载荷增加可选 `reason`（≤200 字）：自动驳回为路由原因，主管驳回为主管填写的原因。
+- **撤回后重新申请**：同一订单子项的 `claim_no` 是确定性的，所以重新申请会撞上已撤回的旧工单。`POST /internal/v1/claims/submit` 遇到 `WITHDRAWN` 的同号工单时重置为新一轮审核（`audit_round+1`，清掉上一轮的路由/金额/风险），其它状态仍是幂等重放。结果出箱事件的唯一键第 2 轮起带 `_r<round>` 后缀，避免第二次撤回/驳回的回写被第一次的键吞掉。

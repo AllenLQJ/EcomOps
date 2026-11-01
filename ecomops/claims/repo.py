@@ -57,12 +57,15 @@ async def add_refund_outbox(conn, t: dict, amount: int, mode: str, supervisor: s
                        {"e": new_event_id(), "c": t["claim_no"], "k": key, "p": json.dumps(payload)})
 
 
-async def add_result_outbox(conn, claim_no: str, status: str) -> None:
+async def add_result_outbox(conn, claim_no: str, status: str, reason: str | None = None, rnd: int = 1) -> None:
+    """把"驳回/撤回"结果回写给 Pilot。唯一键带轮次：同一 claim_no 撤回后重新申请再撤回/驳回时，
+    第二次的回写不能被第一次的键吞掉（第 1 轮沿用旧键，保持兼容）。"""
     result = "WITHDRAWN" if status == "WITHDRAWN" else "REJECTED"
-    key = f"RESULT_{claim_no}_{status}"
+    key = f"RESULT_{claim_no}_{status}" + (f"_r{rnd}" if rnd > 1 else "")
+    payload = {"result": result, **({"reason": reason[:200]} if reason else {})}
     await conn.execute(text("INSERT INTO outbox_events (event_id, claim_no, event_type, refund_idempotency_key, payload) "
                             "VALUES (:e,:c,'CLAIM_RESULT',:k,CAST(:p AS jsonb)) ON CONFLICT (refund_idempotency_key) DO NOTHING"),
-                       {"e": new_event_id(), "c": claim_no, "k": key, "p": json.dumps({"result": result})})
+                       {"e": new_event_id(), "c": claim_no, "k": key, "p": json.dumps(payload, ensure_ascii=False)})
 
 
 def claim_view(t: dict, tracks=None, approvals=None, outbox=None) -> dict:

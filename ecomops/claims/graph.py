@@ -8,7 +8,8 @@ from langgraph.types import interrupt
 from sqlalchemy import text
 
 from ecomops.claims import repo, tracks
-from ecomops.core.config import get_settings, rag_headers
+from ecomops.core import pilot, rag
+from ecomops.core.config import get_settings
 from ecomops.core.db import get_engine
 
 
@@ -23,28 +24,24 @@ class State(TypedDict, total=False):
 
 
 async def load_order_and_policy(state: State) -> dict:
-    """加载订单快照与可退上限（已随提交入库），并尽力检索售后条款（失败只记录，不降级放行）。"""
+    """加载订单快照与可退上限（已随提交入库），并尽力检索售后条款（失败只记录，不降级放行）。
+    有 Pilot 商品快照时把品类名拼进检索词；条款（规则来源/版本/分数/文本）交给三轨引用。"""
     async with get_engine().connect() as c:
         t = await repo.get_ticket(c, state["claim_no"])
-    hits: list = []
-    try:
-        async with httpx.AsyncClient(timeout=get_settings().rag_claim_timeout_s) as client:
-            r = await client.post(get_settings().rag_url.rstrip("/") + "/api/v1/rag/search",
-                                  json={"query": t["buyer_reason_text"] or "售后退换", "tenant_id": t["tenant_id"],
-                                        "catalog_category_id": t["catalog_category_id"], "top_k": 3},
-                                  headers=rag_headers(get_settings()))
-            r.raise_for_status()
-            hits = [h.get("rule_source") for h in r.json().get("hits", [])][:3]
-    except (httpx.HTTPError, ValueError):
-        hits = []
-    return {"policy": hits}
+    snapshot = await pilot.sku_snapshot(t["tenant_id"], t["sku_id"])
+    query = ((snapshot["category_name"] + " ") if snapshot else "") + (t["buyer_reason_text"] or "售后退换")
+    hits = await rag.search(query[:500], tenant_id=t["tenant_id"], catalog_category_id=t["catalog_category_id"],
+                            top_k=3, timeout=get_settings().rag_claim_timeout_s) or []
+    policy = [{"rule_source": h.get("rule_source"), "text": str(h.get("text", ""))[:400], "score": float(h["score"]),
+               "version": h.get("version", 0), "is_demo_rule": bool(h.get("is_demo_rule", False))} for h in hits[:3]]
+    return {"policy": policy}
 
 
 async def run_three_tracks(state: State) -> dict:
     claim_no, rnd = state["claim_no"], state["round"]
     async with get_engine().connect() as c:
         t = await repo.get_ticket(c, claim_no)
-    res = await tracks.run_three(t)
+    res = await tracks.run_three(t, state.get("policy") or [])
     fb = any(x["fallback_used"] for x in res.values())
     async with get_engine().begin() as c:
         for name, x in res.items():
@@ -76,7 +73,7 @@ async def auto_reject(state: State) -> dict:
     async with get_engine().begin() as c:
         if await repo.once(c, f"{cn}:r{state['round']}:auto_reject", cn, "auto_reject"):
             await repo.set_status(c, cn, "AUTO_REJECTED", risk_level="LOW", route_reason=state["reason"])
-            await repo.add_result_outbox(c, cn, "AUTO_REJECTED")
+            await repo.add_result_outbox(c, cn, "AUTO_REJECTED", reason=state.get("reason"), rnd=state["round"])
     return {}
 
 
@@ -130,7 +127,7 @@ async def apply_supervisor_decision(state: State) -> dict:
             await repo.set_status(c, cn, "APPROVED_PENDING_CALLBACK", approved_refund_cents=amt)
         elif action == "REJECT":
             await repo.set_status(c, cn, "SUPERVISOR_REJECTED")
-            await repo.add_result_outbox(c, cn, "SUPERVISOR_REJECTED")
+            await repo.add_result_outbox(c, cn, "SUPERVISOR_REJECTED", reason=d.get("reason") or "主管驳回", rnd=state["round"])
         else:  # REQUEST_EVIDENCE
             await repo.set_status(c, cn, "NEED_MORE_EVIDENCE", route_reason=d.get("reason") or "主管退回补材料")
     return {}

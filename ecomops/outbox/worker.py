@@ -107,3 +107,9 @@ async def run_loop() -> None:
             await process_due()
         except Exception:
             pass
+        try:
+            from ecomops.claims import service    # 延迟导入：claims.service 反过来依赖 worker 之外的模块
+            if await service.withdraw_expired_evidence():
+                await process_due()                 # 马上把撤回结果回写给 Pilot
+        except Exception:
+            pass

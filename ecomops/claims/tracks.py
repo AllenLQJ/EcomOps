@@ -1,6 +1,7 @@
 """三轨审核：默认纯规则。配置了真实 LLM 时，EVIDENCE 轨多一个"是否质量问题"的判断，但只能转人工，不能触发自动通过。
 LLM 调用失败/输出不合规 → fallback_used（与故障注入同一降级路径）。"""
 import asyncio
+import re
 
 from ecomops.core import llm
 
@@ -8,10 +9,41 @@ QUALITY_WORDS = ("漏水", "打不着火", "不制热", "坏了", "坏", "破损
 WINDOW_DAYS = 15
 
 
-def rule_track(t: dict) -> dict:
-    ok = int(t["days_since_delivery"]) <= WINDOW_DAYS
-    return {"track": "RULE", "passed": ok, "confidence": 1.0, "fallback_used": False,
-            "detail": {"window_days": WINDOW_DAYS, "days_since_delivery": int(t["days_since_delivery"])}}
+_SENTENCE = re.compile(r"[。；;\n]")
+_DAYS = re.compile(r"(\d{1,3})\s*天")
+CLAUSE_MIN_SCORE = 0.75
+
+
+def clause_window_days(policy: list[dict]) -> tuple[int, str] | None:
+    """从检索到的高置信条款里解析"质量问题 N 天内可退换"。只认明确讲质量问题的句子：
+    "非质量问题""7 天无理由"这类句子不能缩短质量问题的退换期；解析不到就返回 None，沿用默认窗口。"""
+    for clause in sorted(policy, key=lambda c: -float(c.get("score", 0))):
+        if float(clause.get("score", 0)) < CLAUSE_MIN_SCORE:
+            continue
+        for sentence in _SENTENCE.split(str(clause.get("text", ""))):
+            if ("质量" in sentence and "非质量" not in sentence and "无理由" not in sentence
+                    and any(w in sentence for w in ("退换", "退货", "退款"))):
+                match = _DAYS.search(sentence)
+                if match and 1 <= int(match.group(1)) <= 90:
+                    return int(match.group(1)), str(clause.get("rule_source", ""))
+    return None
+
+
+def _cited(policy: list[dict]) -> list[dict]:
+    return [{"rule_source": c.get("rule_source"), "version": c.get("version", 0), "score": c.get("score"),
+             "is_demo_rule": bool(c.get("is_demo_rule", False))} for c in policy[:3]]
+
+
+def rule_track(t: dict, window: tuple[int, str] | None = None, policy: list[dict] | None = None) -> dict:
+    days = window[0] if window else WINDOW_DAYS
+    ok = int(t["days_since_delivery"]) <= days
+    detail = {"window_days": days, "days_since_delivery": int(t["days_since_delivery"]),
+              "window_source": "clause" if window else "default"}
+    if window:
+        detail["window_clause"] = window[1]
+    if policy:
+        detail["policy_clauses"] = _cited(policy)
+    return {"track": "RULE", "passed": ok, "confidence": 1.0, "fallback_used": False, "detail": detail}
 
 
 AUTO_APPROVE_CONFIDENCE = 0.85      # 与 route() 的自动通过门槛一致
@@ -45,16 +77,20 @@ def evidence_track(t: dict, judged: dict | None = None, llm_error: bool = False)
             "detail": detail}
 
 
-def fee_track(t: dict, quality: bool) -> dict:
+def fee_track(t: dict, quality: bool, policy: list[dict] | None = None) -> dict:
     suggested = min(int(t["item_payable_cents"]), int(t["max_refundable_cents"]))
-    return {"track": "FEE", "passed": True, "confidence": 1.0, "fallback_used": False,
-            "detail": {"suggested_refund_cents": suggested,
-                       "restock_policy": "DEFECTIVE_WAREHOUSE" if quality else "SELLABLE_WAREHOUSE"}}
+    detail = {"suggested_refund_cents": suggested,
+              "restock_policy": "DEFECTIVE_WAREHOUSE" if quality else "SELLABLE_WAREHOUSE"}
+    if policy:
+        detail["policy_clauses"] = _cited(policy)
+    return {"track": "FEE", "passed": True, "confidence": 1.0, "fallback_used": False, "detail": detail}
 
 
-async def run_three(t: dict) -> dict:
+async def run_three(t: dict, policy: list[dict] | None = None) -> dict:
+    policy = policy or []
+
     async def _rule():
-        return rule_track(t)
+        return rule_track(t, clause_window_days(policy), policy)
 
     async def _evi():
         if not llm.configured():
@@ -65,7 +101,7 @@ async def run_three(t: dict) -> dict:
             return evidence_track(t, llm_error=True)
 
     rule, evi = await asyncio.gather(_rule(), _evi())
-    fee = fee_track(t, bool(evi["detail"]["quality_claim"]))
+    fee = fee_track(t, bool(evi["detail"]["quality_claim"]), policy)
     return {"RULE": rule, "EVIDENCE": evi, "FEE": fee}
 
 

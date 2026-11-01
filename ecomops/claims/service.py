@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from ecomops.claims import repo
 from ecomops.core.auth import Identity
+from ecomops.core.config import get_settings
 from ecomops.core.db import get_engine
 from ecomops.core.errors import ApiError
 
@@ -39,8 +40,34 @@ async def status_of(claim_no: str) -> str:
         return (await c.execute(text("SELECT claim_status FROM claim_tickets WHERE claim_no=:c"), {"c": claim_no})).scalar()
 
 
+async def _resubmit_after_withdrawal(graph, p: dict) -> bool:
+    """买家撤回/超时撤回后重新申请：claim_no 由订单子项确定性生成，所以会撞上已撤回的旧工单。
+    这里把旧工单重置为新一轮审核（audit_round+1、清掉上一轮的路由/金额/风险），否则 Pilot 侧订单会卡在
+    AFTER_SALE_OPEN，而 Ops 工单永远停在 WITHDRAWN。只有 WITHDRAWN 才会重开；其它状态都是幂等重放。"""
+    async with claim_lock(p["claim_no"]):
+        async with get_engine().begin() as c:
+            t = await repo.get_ticket(c, p["claim_no"], for_update=True)
+            if not t or t["claim_status"] != "WITHDRAWN":
+                return False
+            rnd = t["audit_round"] + 1
+            await c.execute(text(
+                "UPDATE claim_tickets SET item_payable_cents=:pay, max_refundable_cents=:mx, days_since_delivery=:days, "
+                "buyer_reason_text=:reason, evidence_urls=CAST(:ev AS jsonb), nlu_signal=CAST(:nlu AS jsonb), "
+                "claim_status='SUBMITTED', audit_round=:r, thread_id=:th, risk_level=NULL, route_reason=NULL, "
+                "approved_refund_cents=NULL, suggested_refund_cents=NULL, fallback_used=FALSE, updated_at=now() "
+                "WHERE claim_no=:c"),
+                {"pay": p.get("item_payable_cents", p["max_refundable_cents"]), "mx": p["max_refundable_cents"],
+                 "days": p.get("days_since_delivery", 0), "reason": p.get("buyer_reason_text"),
+                 "ev": json.dumps(p.get("evidence_urls") or []), "nlu": json.dumps(p.get("nlu_signal")),
+                 "r": rnd, "th": thread_id(p["claim_no"], rnd), "c": p["claim_no"]})
+        await run_graph(graph, p["claim_no"], rnd)
+    return True
+
+
 async def submit(graph, p: dict) -> tuple[dict, bool]:
     """幂等提交：返回 ({claim_no,status}, replayed)。"""
+    if await _resubmit_after_withdrawal(graph, p):
+        return {"claim_no": p["claim_no"], "status": await status_of(p["claim_no"])}, False
     async with get_engine().begin() as c:
         r = await c.execute(text(
             "INSERT INTO claim_tickets (claim_no, tenant_id, user_id, order_id, order_item_id, sku_id, catalog_category_id, "
@@ -118,6 +145,33 @@ async def public_status(claim_no: str) -> dict:
             "needs_evidence": t["claim_status"] == "NEED_MORE_EVIDENCE", "evidence_count": len(t["evidence_urls"] or [])}
 
 
+async def withdraw_expired_evidence() -> int:
+    """NEED_MORE_EVIDENCE 超过 evidence_deadline_hours 仍未补材料 → WITHDRAWN，并回写 Pilot 恢复订单。
+    每张工单在 claim_lock 内复核状态与是否仍超期，避免和买家同时补材料/撤回竞争。"""
+    hours = get_settings().evidence_deadline_hours
+    async with get_engine().connect() as c:
+        due = (await c.execute(text(
+            "SELECT claim_no FROM claim_tickets WHERE claim_status='NEED_MORE_EVIDENCE' "
+            "AND updated_at < now() - make_interval(secs => :s) ORDER BY updated_at LIMIT 100"),
+            {"s": hours * 3600})).scalars().all()
+    done = 0
+    for claim_no in due:
+        async with claim_lock(claim_no):
+            async with get_engine().begin() as c:
+                t = await repo.get_ticket(c, claim_no, for_update=True)
+                if not t or t["claim_status"] != "NEED_MORE_EVIDENCE":
+                    continue
+                age = (await c.execute(text("SELECT extract(epoch FROM now() - updated_at) FROM claim_tickets WHERE claim_no=:c"),
+                                       {"c": claim_no})).scalar()
+                if age < hours * 3600:
+                    continue
+                await repo.set_status(c, claim_no, "WITHDRAWN", route_reason="买家超时未补充材料，已自动撤回")
+                await repo.add_result_outbox(c, claim_no, "WITHDRAWN", reason="超时未补充材料，已自动撤回",
+                                             rnd=t["audit_round"])
+                done += 1
+    return done
+
+
 async def withdraw(claim_no: str) -> dict:
     async with claim_lock(claim_no):
         async with get_engine().begin() as c:
@@ -129,7 +183,7 @@ async def withdraw(claim_no: str) -> dict:
             if t["claim_status"] not in ("NEED_MORE_EVIDENCE", "PENDING_SUPERVISOR_REVIEW"):
                 raise ApiError(409, "CLAIM_STATE_CONFLICT", f"claim is {t['claim_status']}")
             await repo.set_status(c, claim_no, "WITHDRAWN")
-            await repo.add_result_outbox(c, claim_no, "WITHDRAWN")
+            await repo.add_result_outbox(c, claim_no, "WITHDRAWN", rnd=t["audit_round"])
     return {"claim_no": claim_no, "claim_status": "WITHDRAWN", "idempotent_replayed": False}
 
 
