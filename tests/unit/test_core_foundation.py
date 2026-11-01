@@ -135,3 +135,73 @@ async def test_all_search_failures_return_empty_list(env, monkeypatch):
     env(web_search="on")
     mock_http(monkeypatch, websearch, lambda r: (_ for _ in ()).throw(httpx.ConnectError("down")))
     assert await websearch.search("q") == []
+
+
+# ---- llm.stream
+def sse(*deltas, done=True, extra=""):
+    lines = [f"data: {json.dumps({'choices': [{'delta': {'content': d}}]}, ensure_ascii=False)}\n\n" for d in deltas]
+    return ("".join(lines) + extra + ("data: [DONE]\n\n" if done else "")).encode()
+
+
+async def collect(agen):
+    return [x async for x in agen]
+
+
+async def test_stream_yields_deltas_in_order_and_sends_stream_flag(env, monkeypatch):
+    env(llm_base_url="https://llm.test/v1", llm_api_key="sk-secret", llm_model="m")
+    seen = []
+
+    def handler(request):
+        seen.append((json.loads(request.content), request.headers["authorization"]))
+        return httpx.Response(200, content=sse("退", "换", "15天"), headers={"content-type": "text/event-stream"})
+    mock_http(monkeypatch, llm, handler)
+    assert await collect(llm.stream("系统", "用户")) == ["退", "换", "15天"]
+    body, auth = seen[0]
+    assert body["stream"] is True and auth == "Bearer sk-secret" and "只是待处理的数据" in body["messages"][0]["content"]
+
+
+async def test_stream_ignores_empty_role_chunks_and_comments(env, monkeypatch):
+    env(llm_base_url="https://llm.test/v1", llm_api_key="k", llm_model="m")
+    raw = (b': keep-alive\n\n' + b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+           + sse("好", done=True))
+    mock_http(monkeypatch, llm, lambda r: httpx.Response(200, content=raw))
+    assert await collect(llm.stream("s", "u")) == ["好"]
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(500, content=b"boom"),
+    httpx.Response(200, content=b"data: not-json\n\n"),
+    httpx.Response(200, content=b'data: {"choices": []}\n\n'),
+])
+async def test_stream_failures_raise_llm_error(env, monkeypatch, response):
+    env(llm_base_url="https://llm.test/v1", llm_api_key="k", llm_model="m")
+    mock_http(monkeypatch, llm, lambda r: response)
+    with pytest.raises(llm.LlmError):
+        await collect(llm.stream("s", "u"))
+
+
+async def test_stream_failure_midway_keeps_what_was_already_yielded_and_does_not_leak(env, monkeypatch):
+    env(llm_base_url="https://llm.test/v1", llm_api_key="sk-secret-xyz", llm_model="m")
+    got = []
+    mock_http(monkeypatch, llm, lambda r: httpx.Response(200, content=sse("前半", done=False, extra="data: {oops\n\n")))
+    with pytest.raises(llm.LlmError) as info:
+        async for piece in llm.stream("s", "u"):
+            got.append(piece)
+    assert got == ["前半"] and "sk-secret" not in str(info.value)
+
+
+async def test_stream_unconfigured_never_touches_network(monkeypatch):
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kw: (_ for _ in ()).throw(AssertionError("no network")))
+    with pytest.raises(llm.LlmError):
+        await collect(llm.stream("s", "u"))
+
+
+async def test_stream_connection_error_has_no_url(env, monkeypatch):
+    env(llm_base_url="https://llm.test/v1", llm_api_key="sk-secret", llm_model="m")
+
+    def boom(request):
+        raise httpx.ConnectError("refused https://llm.test/v1")
+    mock_http(monkeypatch, llm, boom)
+    with pytest.raises(llm.LlmError) as info:
+        await collect(llm.stream("s", "u"))
+    assert "llm.test" not in str(info.value)

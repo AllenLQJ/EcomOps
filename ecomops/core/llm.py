@@ -10,6 +10,7 @@
 import json
 import os
 import re
+from typing import AsyncIterator
 
 import httpx
 
@@ -113,3 +114,35 @@ async def complete(system: str, user: str, *, max_tokens: int = 600, temperature
     if not isinstance(data, dict):
         raise LlmError("model output is not a json object")
     return data
+
+
+async def stream(system: str, user: str, *, max_tokens: int = 600, temperature: float = 0.2) -> AsyncIterator[str]:
+    """真正的逐 token 流式（OpenAI 兼容的 SSE：`stream: true`，逐行 `data: {...}`，以 `[DONE]` 结束）。
+
+    只产出文本增量。未配置 LLM、连接失败、非 200、响应不是合法的 SSE 增量一律抛 LlmError（异常信息不带 URL/密钥）；
+    流已经开始产出之后才失败时同样抛 LlmError，调用方负责决定是丢弃还是保留已输出的部分。"""
+    if not configured():
+        raise LlmError("llm not configured")
+    s = get_settings()
+    body = {"model": s.llm_model, "temperature": temperature, "max_tokens": max_tokens, "stream": True,
+            "messages": [{"role": "system", "content": f"{system}\n{DATA_NOTICE}"}, {"role": "user", "content": user}]}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(s.llm_timeout_s, read=s.llm_timeout_s)) as client:
+            async with client.stream("POST", s.llm_base_url.rstrip("/") + "/chat/completions", json=body,
+                                     headers={"Authorization": f"Bearer {s.llm_api_key}"}) as r:
+                if r.status_code != 200:
+                    raise LlmError(f"llm status {r.status_code}")
+                async for line in r.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        return
+                    try:
+                        delta = json.loads(payload)["choices"][0].get("delta", {}).get("content")
+                    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+                        raise LlmError("unexpected llm stream chunk") from exc
+                    if isinstance(delta, str) and delta:
+                        yield delta
+    except httpx.HTTPError as exc:
+        raise LlmError(f"llm stream failed: {type(exc).__name__}") from exc
