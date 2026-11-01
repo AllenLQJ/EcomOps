@@ -18,3 +18,4 @@ jsonschema==4.23.0
 openapi-spec-validator==0.7.1
 reportlab
 greenlet
+pymysql
