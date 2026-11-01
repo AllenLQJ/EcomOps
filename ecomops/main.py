@@ -30,6 +30,10 @@ async def lifespan(app: FastAPI):
     await saver.setup()
     await alert_service.ensure_schema()
     app.state.graph = claim_graph.build_graph(saver)
+    # 其余三条工作流（约定见 contracts/module_interfaces.md 第 8 节）：共用同一个 AsyncPostgresSaver
+    for name, module in (("kb_graph", "ecomops.kb.graph"), ("listing_graph", "ecomops.listing.graph"),
+                         ("training_graph", "ecomops.training.graph")):
+        setattr(app.state, name, importlib.import_module(module).build_graph(saver))
     task = asyncio.create_task(worker.run_loop())
     yield
     task.cancel()
