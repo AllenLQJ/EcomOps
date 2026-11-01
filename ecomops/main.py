@@ -36,7 +36,9 @@ async def lifespan(app: FastAPI):
         setattr(app.state, name, importlib.import_module(module).build_graph(saver))
     task = asyncio.create_task(worker.run_loop())
     yield
+    # 先等后台循环真正退出，再关连接池/引擎：否则循环可能正卡在一次查询里，关库后它永远等不到连接，进程退出时挂住
     task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
     await pool.close()
     await dispose_engines()
 

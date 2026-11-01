@@ -103,6 +103,8 @@ class FakePilot:
 
 
 def make_env(monkeypatch, db_name, **env):
+    from ecomops.core import llm
+    llm.set_failures([])      # 进程内的故障注入是全局的；别的用例注入过 evidence_track 故障时不能污染这里
     fp = FakePilot()
     monkeypatch.setenv("ECOMOPS_PILOT_URL", fp.start())
     monkeypatch.setenv("ECOMOPS_RECONCILE_INTERVAL_SECONDS", "0.3")
