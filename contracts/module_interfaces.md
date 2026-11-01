@@ -70,3 +70,20 @@
 **查询**：`GET /api/v1/claims`（supervisor/operator，`status` 过滤）、`GET /api/v1/claims/{claim_no}`（含 tracks/approvals/outbox）。
 **故障注入**：`POST /internal/v1/faults`（`ECOMOPS_ENABLE_FAULTS=1`）`{"llm_fail": ["evidence_track"], "publish_writeback_fail": true}`；`{}` 清空。
 **开发令牌**：`ECOMOPS_DEV_TOKENS=1` 时 `POST /api/v1/dev/token {user_id, role, tenant_id?}`。
+
+## 8. LangGraph 工作流约定（kb_qa / listing_compliance_review / cs_training）
+
+四条工作流都是 `StateGraph`，与 `claim_audit` 共用 `main.py` lifespan 里的同一个 `AsyncPostgresSaver`：模块暴露 `build_graph(checkpointer)`，`main.py` 把编译好的图挂到 `app.state.<name>_graph`。对外 HTTP 契约不因改图而变化。
+
+| 图 | 模块 | thread_id | 节点副作用幂等 |
+|---|---|---|---|
+| claim_audit | `ecomops/claims/graph.py` | `<claim_no>:r<round>` | `step_executions`（既有） |
+| kb_qa | `ecomops/kb/graph.py` | `kb:<tenant_id>:<session_id>:<turn>` | 入队用 `ON CONFLICT`；`save_memory` 每轮 UPSERT |
+| listing_compliance_review | `ecomops/listing/graph.py` | `listing:<review_id>` | `review_id` 唯一；对象存储键 `<review_id>.pdf` |
+| cs_training | `ecomops/training/graph.py` | `train:<tenant_id>:<session_id>` | 每轮 UPSERT `training_sessions`；`finished` 后拒绝再追加 |
+
+公共规则：
+- 外部副作用（写库、写对象存储、调 EcomRAG/LLM/联网搜索）只在节点里发生；LLM、联网搜索失败一律降级（`fallback_used=true`），**不得以默认分或默认通过代替**。
+- 买家/客服/PDF 原文进提示词时必须用 `llm.untrusted(label, text)` 包进定界标签。
+- 共享件：`ecomops/core/llm.py` 的 `complete()`、`ecomops/core/rag.py` 的 `search()`（失败返回 `None`，调用方决定降级）、`ecomops/core/websearch.py` 的 `search()`（默认关闭，仅低置信且开关为 on 时调用）。
+- 流式接口（SSE）统一事件格式：`event: <name>\ndata: <json>\n\n`，与 `training` 路由的 `event()` 一致。

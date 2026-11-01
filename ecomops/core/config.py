@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     llm_timeout_s: float = 8.0
+    web_search: str = "off"                # off|on：联网搜索总开关（低置信且开启时才搜），默认关闭
+    tavily_key: str = ""                   # 配置则先用 Tavily，失败/未配置再回退 DuckDuckGo
+    web_search_timeout_s: float = 5.0
     alert_webhook_url: str = ""            # 非空时，新告警会 POST 到该地址（失败只记录，不影响主流程）
     alert_stuck_minutes: int = 30          # 退款回调停留超过该时长视为"卡住"告警
     outbox_backoff_seconds: float = 30.0
