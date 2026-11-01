@@ -65,3 +65,4 @@ docker compose -f deploy/docker-compose.full.yml up -d --build
 - 离线评测：`python scripts/offline_eval.py [--rag-url http://127.0.0.1:8010 --rag-token <令牌>] [--out docs/离线评测报告.md]`。
 - 超时未补材料自动撤回：`ECOMOPS_EVIDENCE_DEADLINE_HOURS`（默认 72）。
 - 测试依赖：`pip install -r requirements-dev.txt`（含 S3 仿真服务 moto，用于验证 MinIO 后端）。
+- 联网搜索 MCP 服务：`python -m ecomops.mcp_servers.websearch --transport streamable-http --port 8092`，再设 `ECOMOPS_WEB_SEARCH=on ECOMOPS_WEB_SEARCH_MCP_URL=http://127.0.0.1:8092/mcp`（Tavily 需要 `ECOMOPS_TAVILY_KEY`，没有就用 DuckDuckGo）。

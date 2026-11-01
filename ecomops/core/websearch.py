@@ -37,10 +37,52 @@ async def _duckduckgo(client: httpx.AsyncClient, query: str, limit: int) -> list
     return out
 
 
-async def search(query: str, limit: int = 3) -> list[dict]:
+def _clean(items) -> list[dict]:
+    """外部结果一律当不可信：只留三个字符串字段并截断。"""
+    out = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("url"), str) and item["url"]:
+            out.append({"title": str(item.get("title", ""))[:200], "url": item["url"][:500],
+                        "snippet": str(item.get("snippet", ""))[:400]})
+    return out
+
+
+async def _via_mcp(url: str, query: str, limit: int) -> list[dict]:
+    """经 MCP（streamable-http）调用联网搜索服务；任何失败都当作没有结果（不回退到进程内直接搜索，
+    否则"把联网放进隔离的 MCP 服务"这个边界就被绕过了）。"""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
     s = get_settings()
+    try:
+        async with streamablehttp_client(url, timeout=s.web_search_timeout_s) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("web_search", {"query": query, "limit": limit})
+        if result.isError:
+            return []
+        data = result.structuredContent
+        if isinstance(data, dict) and "result" in data:
+            data = data["result"]
+        if data is None:                           # 只带文本内容的服务端：取第一段文本按 JSON 解析
+            import json
+            data = json.loads(result.content[0].text)
+        return _clean(data)[:limit]
+    except Exception:    # noqa: BLE001 — MCP/网络/解析的任何失败都降级为"没有结果"
+        return []
+
+
+async def search(query: str, limit: int = 3) -> list[dict]:
     if not enabled():
         return []
+    url = get_settings().web_search_mcp_url
+    if url:
+        return await _via_mcp(url, query, limit)
+    return await search_backends(query, limit)
+
+
+async def search_backends(query: str, limit: int = 3) -> list[dict]:
+    """直接访问 Tavily → DuckDuckGo（MCP 服务端内部也调它）。不看总开关：开关属于调用方。"""
+    s = get_settings()
     async with httpx.AsyncClient(timeout=s.web_search_timeout_s) as client:
         if s.tavily_key:
             try:
