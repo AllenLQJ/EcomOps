@@ -100,7 +100,7 @@ def evaluate_retrieval(rows, rag_url=None, rag_token=None):
         return {'n': len(rows), 'skipped': '未运行（需要 EcomRAG）'}
     import httpx
     predicted, distributions, failures = [], [], []
-    headers = {'Authorization': f'Bearer {rag_token}'} if rag_token else {}
+    headers = {'X-Internal-Token': rag_token} if rag_token else {}
     with httpx.Client(timeout=10, follow_redirects=False, trust_env=False) as client:
         for index, row in enumerate(rows, 1):
             try:
