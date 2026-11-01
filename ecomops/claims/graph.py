@@ -28,7 +28,7 @@ async def load_order_and_policy(state: State) -> dict:
         t = await repo.get_ticket(c, state["claim_no"])
     hits: list = []
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=get_settings().rag_claim_timeout_s) as client:
             r = await client.post(get_settings().rag_url.rstrip("/") + "/api/v1/rag/search",
                                   json={"query": t["buyer_reason_text"] or "售后退换", "tenant_id": t["tenant_id"],
                                         "catalog_category_id": t["catalog_category_id"], "top_k": 3})

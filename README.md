@@ -35,3 +35,14 @@ uv venv --python 3.12 .venv && uv pip install -r requirements.txt --python .venv
 .venv/bin/python -m pytest tests -q   # unit + acceptance（含 AC-TX-04 完整版、AC-KB-01、契约一致性）；需 PostgreSQL，AC-TX-04 还需 ../EcomPilot 与 MySQL(3307)
 ```
 每个测试一库 `ecomops_test_<uuid8>`，结束删除。契约在 `contracts/`（OpenAPI、schema、错误码、模块接口约定）。
+
+
+## 接入真实 EcomRAG（可选，替代 RAG 桩）
+
+```bash
+# 先在 ../EcomRAG 起好依赖与后端 :8010，并调高游客配额（其 .env 里设 GUEST_DAILY_LIMIT，默认每天仅 5 次）
+scripts/start_with_ecomrag.sh
+```
+
+适配器见 `adapters/ecomrag_adapter.py`。已用真实 EcomRAG 实测知识问答（命中得分 0.99；库外问题进待补充队列）；
+**知识发布（入库）只有单元测试，未对真实 Milvus 实测**，避免向 EcomRAG 知识库写入测试数据。

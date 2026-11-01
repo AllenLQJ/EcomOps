@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     pilot_url: str = "http://127.0.0.1:8085"
     pilot_internal_token: str = "dev-internal-token"
     rag_url: str = "http://127.0.0.1:8002"
+    rag_search_timeout_s: float = 3.0      # 接真实 EcomRAG（含 LLM 生成）时需调大，见 adapters/
+    rag_upsert_timeout_s: float = 3.0      # 真实入库走 ingest 命令行，需调大
+    rag_claim_timeout_s: float = 2.0       # 售后审核里的条款检索，尽力而为
     nlu_url: str = "http://127.0.0.1:8001"
     dev_tokens: bool = False
     enable_faults: bool = False

@@ -34,7 +34,7 @@ async def ask(body, identity):
         elif kind == "BROAD":
             queries = [q.strip() for q in re.split(r"以及|还有|顺便|[?？]", body.query) if q.strip()][:3]
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=get_settings().rag_search_timeout_s) as client:
                 for query in queries:
                     r = await client.post(get_settings().rag_url + "/api/v1/rag/search", json={
                         "query": query, "tenant_id": identity.tenant_id,
@@ -118,7 +118,7 @@ async def transition(tenant, queue_id, action, draft=None):
         item = await get_item(c, tenant, queue_id)
     error = None
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=get_settings().rag_upsert_timeout_s) as client:
             response = await client.post(get_settings().rag_url + "/internal/v1/kb/upsert", json={
                 "chunk_id": item["deterministic_chunk_id"], "tenant_id": tenant,
                 "catalog_category_id": item["catalog_category_id"],
