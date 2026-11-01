@@ -133,6 +133,37 @@ paths:
         "200": {description: ok}
         "404": {$ref: "#/components/responses/Err"}
         "409": {$ref: "#/components/responses/Err"}
+  /api/v1/alerts:
+    get:
+      summary: "人工处理告警列表（supervisor）：回调/回写多次失败的出箱事件，以及卡住的退款回调"
+      parameters: [{name: state, in: query, required: false, schema: {type: string, enum: [OPEN, RESOLVED]}}]
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: object, required: [alerts], properties: {alerts: {type: array, items: {type: object, required: [alert_id, type, state, claim_no], properties: {alert_id: {type: string, description: "出箱事件 id；卡住项为 stuck:<claim_no>（不可重试/标记处理）"}, type: {type: string, enum: [CALLBACK_FAILED_MANUAL, RESULT_NOTIFY_FAILED, CALLBACK_STUCK]}, state: {type: string, enum: [OPEN, RESOLVED]}, claim_no: {type: string}, claim_status: {type: string}, attempts: {type: integer, nullable: true}, last_error: {type: string, nullable: true}, created_at: {type: string}, updated_at: {type: string}}}}}}}}}
+        "401": {$ref: "#/components/responses/Err"}
+        "403": {$ref: "#/components/responses/Err"}
+  /api/v1/alerts/{alert_id}/retry:
+    post:
+      summary: "重试：事件放回 PENDING，由 worker 走既有对账路径（先查 refunds/status），不会重复退款"
+      parameters: [{name: alert_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: false
+        content: {application/json: {schema: {type: object, properties: {reason: {type: string, maxLength: 500}}}}}
+      responses:
+        "202": {description: accepted}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
+  /api/v1/alerts/{alert_id}/resolve:
+    post:
+      summary: "标记已人工处理（线下已处理完毕）；需填写原因，写入 alert_actions 留痕"
+      parameters: [{name: alert_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, minLength: 3, maxLength: 500}}}}}
+      responses:
+        "200": {description: ok}
+        "400": {$ref: "#/components/responses/Err"}
+        "404": {$ref: "#/components/responses/Err"}
+        "409": {$ref: "#/components/responses/Err"}
   /api/v1/claims:
     get:
       summary: 工单列表（supervisor/operator，按租户）

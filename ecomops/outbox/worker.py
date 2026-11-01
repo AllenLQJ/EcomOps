@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import httpx
 from sqlalchemy import text
 
+from ecomops.alerts import service as alerts
 from ecomops.core.config import get_settings
 from ecomops.core.db import get_engine
 
@@ -35,6 +36,10 @@ async def _finish(ev: dict, status: str, error: str | None = None, ticket_status
             await c.execute(text("UPDATE claim_tickets SET claim_status=:t, updated_at=now() WHERE claim_no=:c "
                                  "AND claim_status IN ('APPROVED_PENDING_CALLBACK','CALLBACK_RETRYING')"),
                             {"t": ticket_status, "c": ev["claim_no"]})
+        tenant = (await c.execute(text("SELECT tenant_id FROM claim_tickets WHERE claim_no=:c"), {"c": ev["claim_no"]})).scalar() \
+            if status == "FAILED_MANUAL" else None
+    if status == "FAILED_MANUAL":
+        await alerts.notify(ev, error, tenant)
 
 
 async def _handle_refund(ev: dict) -> None:

@@ -130,3 +130,16 @@ CREATE TABLE training_sessions (
   status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 告警人工处理留痕（重试/标记已处理）；由 ecomops.alerts.service.ensure_schema 在启动时幂等创建，已有库无需手工迁移
+CREATE TABLE IF NOT EXISTS alert_actions (
+  id BIGSERIAL PRIMARY KEY,
+  event_id VARCHAR(64) NOT NULL,
+  claim_no VARCHAR(64) NOT NULL,
+  tenant_id VARCHAR(64) NOT NULL,
+  action VARCHAR(16) NOT NULL,            -- RETRY | RESOLVE
+  actor_user_id VARCHAR(64) NOT NULL,
+  reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_alert_actions_event ON alert_actions (event_id);

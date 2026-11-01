@@ -10,6 +10,7 @@
 | 401 | INTERNAL_AUTH_FAILED | `X-Internal-Token` 校验失败 |
 | 403 | FORBIDDEN_ROLE | 角色无权执行该操作 |
 | 404 | NOT_FOUND | 资源不存在或不属于当前租户 |
+| 409 | ALERT_STATE_CONFLICT | 告警已不处于待人工处理状态（已被重试/标记处理） |
 | 409 | CLAIM_STATE_CONFLICT | 工单当前状态不允许该操作（含已被另一决定处理且决定不同） |
 | 409 | PUBLISH_STATE_CONFLICT | 待补录条目状态不允许该操作 |
 | 422 | AMOUNT_EXCEEDS_LIMIT | 批准/修改金额超过 `max_refundable_cents` 或 ≤0 |

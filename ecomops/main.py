@@ -9,6 +9,8 @@ from fastapi.responses import FileResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
+from ecomops.alerts import service as alert_service
+from ecomops.alerts.router import router as alerts_router
 from ecomops.claims import graph as claim_graph
 from ecomops.claims.router import router as claims_router
 from ecomops.core import llm
@@ -25,6 +27,7 @@ async def lifespan(app: FastAPI):
     await pool.open()
     saver = AsyncPostgresSaver(pool)
     await saver.setup()
+    await alert_service.ensure_schema()
     app.state.graph = claim_graph.build_graph(saver)
     task = asyncio.create_task(worker.run_loop())
     yield
@@ -36,6 +39,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="EcomOps", lifespan=lifespan)
 install_error_handlers(app)
 app.include_router(claims_router)
+app.include_router(alerts_router)
 for _mod in ("ecomops.kb.router", "ecomops.listing.router", "ecomops.training.router"):
     try:
         app.include_router(importlib.import_module(_mod).router)
