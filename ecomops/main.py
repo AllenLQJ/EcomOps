@@ -2,7 +2,10 @@ import asyncio
 import importlib
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import Depends, FastAPI
+from fastapi.responses import FileResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
@@ -68,3 +71,13 @@ if get_settings().enable_faults:
         except ImportError:
             pass
         return {"llm_fail": body.get("llm_fail") or [], "publish_writeback_fail": bool(body.get("publish_writeback_fail"))}
+
+
+_INDEX = Path(__file__).resolve().parents[1] / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    if not _INDEX.exists():
+        return {"status": "ok", "ui": "static/index.html not built yet"}
+    return FileResponse(_INDEX)
