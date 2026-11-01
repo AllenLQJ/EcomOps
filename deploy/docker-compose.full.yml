@@ -1,0 +1,121 @@
+# 全栈（EcomPilot + EcomOps）：需要 EcomPilot 与 EcomOps 两个仓库是同级目录。
+#   docker compose -f deploy/docker-compose.full.yml up -d --build
+# 密钥通过环境变量传入（见 deploy/.env.example）；没设置时用开发默认值，仅用于本机演示。
+# NLU / RAG 在这里是桩；接真实 EcomNLU / EcomRAG 见各仓库 README。
+name: ecom-full
+x-pilot: &pilot
+  build: {context: ../../EcomPilot}
+  image: ecompilot:local
+  depends_on: {mysql: {condition: service_healthy}}
+  environment: &pilot-env
+    ECOMPILOT_DB_HOST: mysql
+    ECOMPILOT_DB_PORT: "3306"
+    ECOMPILOT_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ecompilot_root}
+    ECOMPILOT_JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-dev-secret-change-me}
+    ECOMPILOT_INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+    ECOMPILOT_OPS_URL: http://ops:8000
+    ECOMPILOT_NLU_URL: http://nlu:8001
+    ECOMPILOT_PILOT_URL: http://pilot:8085
+    ECOMPILOT_AGENT_ENV_FIT_URL: http://env-fit:8011
+    ECOMPILOT_AGENT_SELECTION_URL: http://selection:8012
+    ECOMPILOT_AGENT_PRICING_URL: http://pricing-order:8013
+    ECOMPILOT_AGENT_AFTERSALES_URL: http://aftersales:8014
+    ECOMPILOT_AGENT_SEEDING_URL: http://seeding-note:8015
+    ECOMPILOT_DEV_TOKENS: ${DEV_TOKENS:-1}
+    ECOMPILOT_ENV: ${ENV:-dev}
+  restart: unless-stopped
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ecompilot_root}
+      MYSQL_DATABASE: ecompilot
+      TZ: Asia/Shanghai
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--max-connections=500", "--default-time-zone=+08:00"]
+    volumes:
+      - ../../EcomPilot/contracts/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../../EcomPilot/contracts/fixtures/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecomops_pw}
+      POSTGRES_DB: ecomops
+      TZ: Asia/Shanghai
+    command: ["postgres", "-c", "max_connections=300"]
+    volumes:
+      - ../contracts/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  pilot:
+    <<: *pilot
+    ports: ["127.0.0.1:8085:8085"]
+  nlu:
+    <<: *pilot
+    command: ["python", "-m", "uvicorn", "stubs.nlu_stub:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment: {<<: *pilot-env, PORT: "8001"}
+  env-fit:
+    <<: *pilot
+    command: ["python", "-m", "uvicorn", "pilot.agents.env_fit_agent:app", "--host", "0.0.0.0", "--port", "8011"]
+    environment: {<<: *pilot-env, PORT: "8011"}
+  selection:
+    <<: *pilot
+    command: ["python", "-m", "uvicorn", "pilot.agents.selection_agent:app", "--host", "0.0.0.0", "--port", "8012"]
+    environment: {<<: *pilot-env, PORT: "8012"}
+  pricing-order:
+    <<: *pilot
+    command: ["python", "-m", "uvicorn", "pilot.agents.pricing_order_agent:app", "--host", "0.0.0.0", "--port", "8013"]
+    environment: {<<: *pilot-env, PORT: "8013"}
+  aftersales:
+    <<: *pilot
+    command: ["python", "-m", "uvicorn", "pilot.agents.aftersales_agent:app", "--host", "0.0.0.0", "--port", "8014"]
+    environment: {<<: *pilot-env, PORT: "8014"}
+  seeding-note:
+    <<: *pilot
+    command: ["python", "-m", "uvicorn", "pilot.agents.seeding_note_agent:app", "--host", "0.0.0.0", "--port", "8015"]
+    environment: {<<: *pilot-env, PORT: "8015"}
+
+  rag:
+    build: {context: ..}
+    image: ecomops:local
+    command: ["python", "-m", "uvicorn", "stubs.rag_stub:app", "--host", "0.0.0.0", "--port", "8002"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8002/health',timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+  ops:
+    build: {context: ..}
+    image: ecomops:local
+    depends_on:
+      postgres: {condition: service_healthy}
+      pilot: {condition: service_healthy}
+    environment:
+      ECOMOPS_DB_HOST: postgres
+      ECOMOPS_DB_PORT: "5432"
+      ECOMOPS_DB_PASSWORD: ${POSTGRES_PASSWORD:-ecomops_pw}
+      ECOMOPS_JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-dev-secret-change-me}
+      ECOMOPS_INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      ECOMOPS_PILOT_INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      ECOMOPS_PILOT_URL: http://pilot:8085
+      ECOMOPS_RAG_URL: http://rag:8002
+      ECOMOPS_DEV_TOKENS: ${DEV_TOKENS:-1}
+      ECOMOPS_ENV: ${ENV:-dev}
+    ports: ["127.0.0.1:8000:8000"]
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  pg_data:

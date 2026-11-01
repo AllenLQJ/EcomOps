@@ -46,3 +46,10 @@ scripts/start_with_ecomrag.sh
 
 适配器见 `adapters/ecomrag_adapter.py`。已用真实 EcomRAG 实测知识问答（命中得分 0.99；库外问题进待补充队列）；
 **知识发布（入库）只有单元测试，未对真实 Milvus 实测**，避免向 EcomRAG 知识库写入测试数据。
+
+## 全栈容器（EcomPilot + EcomOps）
+
+```bash
+# 需要 EcomPilot 与 EcomOps 是同级目录；密钥见 deploy/.env.example
+docker compose -f deploy/docker-compose.full.yml up -d --build
+```

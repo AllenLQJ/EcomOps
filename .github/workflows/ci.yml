@@ -1,0 +1,41 @@
+name: ci
+on:
+  push: {branches: [main]}
+  pull_request:
+jobs:
+  test:
+    # 验收/联调用例会起真实 EcomPilot（同级目录 EcomPilot，经 ECOMPILOT_DIR 指定）和它的 MySQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env: {POSTGRES_PASSWORD: ecomops_pw, POSTGRES_DB: ecomops}
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=5s --health-retries=20
+      mysql:
+        image: mysql:8.0
+        env: {MYSQL_ROOT_PASSWORD: ecompilot_root, MYSQL_DATABASE: ecompilot}
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pecompilot_root"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      ECOMPILOT_DIR: ${{ github.workspace }}/EcomPilot
+    steps:
+      - uses: actions/checkout@v4
+        with: {path: EcomOps}
+      - uses: actions/checkout@v4
+        with: {repository: AllenLQJ/EcomPilot, path: EcomPilot}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Install EcomPilot into its own venv (tests spawn it)
+        run: |
+          python -m venv EcomPilot/.venv
+          EcomPilot/.venv/bin/pip install -r EcomPilot/requirements.txt
+      - name: Install EcomOps
+        working-directory: EcomOps
+        run: pip install -r requirements.txt
+      - name: Test
+        working-directory: EcomOps
+        run: python -m pytest tests -q
