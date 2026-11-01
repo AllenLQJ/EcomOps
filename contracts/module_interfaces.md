@@ -93,3 +93,7 @@
 - **超时未补材料自动撤回**：`ECOMOPS_EVIDENCE_DEADLINE_HOURS`（默认 72）。`NEED_MORE_EVIDENCE` 超期且仍未补 → `WITHDRAWN`（`route_reason` 写明原因）+ `CLAIM_RESULT{result:WITHDRAWN, reason}` 出箱事件回写 Pilot。每张工单在 `claim_lock` 内复核，和买家补材料/撤回不会竞争。
 - **驳回原因**：`CLAIM_RESULT` 载荷增加可选 `reason`（≤200 字）：自动驳回为路由原因，主管驳回为主管填写的原因。
 - **撤回后重新申请**：同一订单子项的 `claim_no` 是确定性的，所以重新申请会撞上已撤回的旧工单。`POST /internal/v1/claims/submit` 遇到 `WITHDRAWN` 的同号工单时重置为新一轮审核（`audit_round+1`，清掉上一轮的路由/金额/风险），其它状态仍是幂等重放。结果出箱事件的唯一键第 2 轮起带 `_r<round>` 后缀，避免第二次撤回/驳回的回写被第一次的键吞掉。
+
+### 7.y 增补：execute_refund_callback 节点与加急排序
+- 图 3-4 里的 `execute_refund_callback` 节点现在在 `claim_audit` 图中：`auto_approve` 与"批准类主管决定"之后进入该节点，驳回/退回补材料直接结束。节点以 `step_execution_id`（`<claim_no>:r<round>:execute_refund_callback`）防重入，**只登记并唤醒 outbox worker，不同步调用 Pilot**；真正的 HTTP 调用、超时后先查 `refunds/status`、重试到上限转人工，仍由 outbox worker 完成（原因见决策记录第 5 条）。
+- `GET /api/v1/claims` 排序：`nlu_signal.priority_boost === true` 的工单排前面，其余按创建时间倒序；每个工单对象带布尔字段 `priority_boost`。加急只是排序辅助，不改变任何审核结论。

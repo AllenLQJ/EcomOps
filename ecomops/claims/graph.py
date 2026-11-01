@@ -1,4 +1,5 @@
 """claim_audit LangGraph：load → 三轨并发 → 聚合路由 → {自动驳回 | 补材料 | 自动批准 | 通知主管→interrupt→应用决定}。"""
+import asyncio
 import json
 from typing import TypedDict
 
@@ -98,6 +99,26 @@ async def auto_approve(state: State) -> dict:
     return {}
 
 
+async def execute_refund_callback(state: State) -> dict:
+    """路线图图 3-4 的 execute_refund_callback 节点。
+
+    节点本身不同步调用 Pilot：Pilot 提交接口有 3 秒超时，同步回调超时会触发它的补偿回滚（决策记录第 5 条）。
+    所以这里只做两件事：以 step_execution_id 防重入地"登记并唤醒"——退款回调事件已在批准节点里和审批结论同一个 PG 事务写进
+    outbox_events；真正的 HTTP 调用、超时后先查 refunds/status 再决定是否补发、重试到上限转人工，都由 outbox worker 完成。"""
+    cn = state["claim_no"]
+    async with get_engine().begin() as c:
+        first = await repo.once(c, f"{cn}:r{state['round']}:execute_refund_callback", cn, "execute_refund_callback")
+    if first:
+        from ecomops.outbox import worker     # 延迟导入：worker 反过来被 claims.service 的扫描用到
+        asyncio.get_running_loop().create_task(worker.process_due())
+    return {}
+
+
+def after_decision(state: State) -> str:
+    """主管决定之后：批准类（工单已进入 APPROVED_PENDING_CALLBACK）才走回调节点，驳回/退回补材料直接结束。"""
+    return "execute_refund_callback" if state["decision"]["action"] in ("APPROVE", "MODIFY_AMOUNT") else END
+
+
 async def notify_supervisor(state: State) -> dict:
     cn = state["claim_no"]
     async with get_engine().begin() as c:
@@ -139,7 +160,8 @@ def build_graph(checkpointer):
                      ("aggregate_and_route", aggregate_and_route), ("auto_reject", auto_reject),
                      ("request_more_evidence", request_more_evidence), ("auto_approve", auto_approve),
                      ("notify_supervisor", notify_supervisor), ("supervisor_review", supervisor_review),
-                     ("apply_supervisor_decision", apply_supervisor_decision)]:
+                     ("apply_supervisor_decision", apply_supervisor_decision),
+                     ("execute_refund_callback", execute_refund_callback)]:
         g.add_node(name, fn)
     g.add_edge(START, "load_order_and_policy")
     g.add_edge("load_order_and_policy", "run_three_tracks")
@@ -149,6 +171,10 @@ def build_graph(checkpointer):
         "auto_approve": "auto_approve", "supervisor": "notify_supervisor"})
     g.add_edge("notify_supervisor", "supervisor_review")
     g.add_edge("supervisor_review", "apply_supervisor_decision")
-    for end in ("auto_reject", "request_more_evidence", "auto_approve", "apply_supervisor_decision"):
+    g.add_edge("auto_approve", "execute_refund_callback")
+    g.add_conditional_edges("apply_supervisor_decision", after_decision,
+                            {"execute_refund_callback": "execute_refund_callback", END: END})
+    g.add_edge("execute_refund_callback", END)
+    for end in ("auto_reject", "request_more_evidence"):
         g.add_edge(end, END)
     return g.compile(checkpointer=checkpointer)

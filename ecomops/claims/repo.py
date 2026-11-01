@@ -75,7 +75,8 @@ def claim_view(t: dict, tracks=None, approvals=None, outbox=None) -> dict:
          "suggested_refund_cents": None if t["suggested_refund_cents"] is None else int(t["suggested_refund_cents"]),
          "approved_refund_cents": None if t["approved_refund_cents"] is None else int(t["approved_refund_cents"]),
          "risk_level": t["risk_level"], "route_reason": t["route_reason"], "fallback_used": t["fallback_used"],
-         "audit_round": t["audit_round"], "created_at": iso(t["created_at"])}
+         "audit_round": t["audit_round"], "created_at": iso(t["created_at"]),
+         "priority_boost": isinstance(t.get("nlu_signal"), dict) and t["nlu_signal"].get("priority_boost") is True}
     if tracks is not None:
         v["tracks"] = tracks
     if approvals is not None:

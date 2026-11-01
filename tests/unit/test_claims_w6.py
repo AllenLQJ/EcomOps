@@ -214,3 +214,62 @@ def test_resubmitting_a_live_claim_is_still_an_idempotent_replay(env):
     c.post("/internal/v1/claims/submit", json=payload("RE2"), headers=INT)
     again = c.post("/internal/v1/claims/submit", json=payload("RE2"), headers=INT)
     assert again.json()["idempotent_replayed"] is True and detail(c, "RE2")["audit_round"] == 1
+
+
+# ---------------- 加急排序、退款回调节点
+def with_signal(no, boost, **kw):
+    body = payload(no, **kw)
+    if boost is not None:
+        body["nlu_signal"] = {"priority_boost": boost, "sentiment": "NEGATIVE" if boost else "POSITIVE", "sentiment_score": 0.95}
+    return body
+
+
+def listed(c, status=None, **kw):
+    q = f"?status={status}" if status else ""
+    return c.get("/api/v1/claims" + q, headers=H(**kw)).json()["claims"]
+
+
+def test_priority_boost_claims_sort_first_then_newest(env):
+    c, _ = env
+    for no, boost in (("PB_A", False), ("PB_B", True), ("PB_C", None), ("PB_D", True)):
+        assert c.post("/internal/v1/claims/submit", json=with_signal(no, boost), headers=INT).json()["status"] == "PENDING_SUPERVISOR_REVIEW"
+        time.sleep(1.1)
+    rows = listed(c)
+    assert [r["claim_no"] for r in rows] == ["PB_D", "PB_B", "PB_C", "PB_A"]
+    assert [r["priority_boost"] for r in rows] == [True, True, False, False]
+    assert all(type(r["priority_boost"]) is bool for r in rows)
+    assert [r["claim_no"] for r in listed(c, "PENDING_SUPERVISOR_REVIEW")] == ["PB_D", "PB_B", "PB_C", "PB_A"]
+    assert detail(c, "PB_B")["priority_boost"] is True and detail(c, "PB_C")["priority_boost"] is False
+    assert listed(c, tenant="OTHER") == []
+
+
+def test_priority_boost_only_true_boolean_counts(env):
+    c, _ = env
+    for no, value in (("PV_STR", "true"), ("PV_ONE", 1), ("PV_NULL", None)):
+        body = payload(no)
+        body["nlu_signal"] = {"priority_boost": value}
+        c.post("/internal/v1/claims/submit", json=body, headers=INT)
+        time.sleep(1.1)
+    assert [r["priority_boost"] for r in listed(c)] == [False, False, False]
+
+
+def steps(db_name, claim_no):
+    import psycopg
+    from ecomops.core.db import conninfo
+    with psycopg.connect(conninfo(db_name)) as conn:
+        return [r[0] for r in conn.execute("SELECT node FROM step_executions WHERE claim_no=%s ORDER BY created_at", (claim_no,))]
+
+
+def test_refund_callback_node_runs_once_for_auto_and_supervisor_approval_but_not_for_rejection(env, db_name):
+    c, fp = env
+    assert c.post("/internal/v1/claims/submit", json=payload("CB_AUTO", amount=4000, days=3, reason="坏了"), headers=INT).status_code == 202
+    c.post("/internal/v1/claims/submit", json=payload("CB_SUP"), headers=INT)
+    c.post("/api/v1/claims/CB_SUP/confirm", json={"action": "APPROVE"}, headers=H())
+    c.post("/internal/v1/claims/submit", json=payload("CB_REJ"), headers=INT)
+    c.post("/api/v1/claims/CB_REJ/confirm", json={"action": "REJECT", "reason": "凭证不符"}, headers=H())
+    assert steps(db_name, "CB_AUTO").count("execute_refund_callback") == 1
+    assert steps(db_name, "CB_SUP").count("execute_refund_callback") == 1
+    assert "execute_refund_callback" not in steps(db_name, "CB_REJ")
+    # 重复批准（同一决定）幂等：节点不会再登记第二次
+    c.post("/api/v1/claims/CB_SUP/confirm", json={"action": "APPROVE"}, headers=H())
+    assert steps(db_name, "CB_SUP").count("execute_refund_callback") == 1

@@ -188,8 +188,9 @@ async def withdraw(claim_no: str) -> dict:
 
 
 async def list_claims(ident: Identity, status: str | None) -> list[dict]:
+    # 加急（NLU 的 priority_boost）只是排序辅助信号：同一批里加急的排前面，其余按创建时间倒序；不改变任何审核结论
     sql = "SELECT * FROM claim_tickets WHERE tenant_id=:t" + (" AND claim_status=:s" if status else "") + \
-          " ORDER BY created_at DESC LIMIT 200"
+          " ORDER BY COALESCE(nlu_signal->'priority_boost' = 'true'::jsonb, false) DESC, created_at DESC LIMIT 200"
     async with get_engine().connect() as c:
         rows = (await c.execute(text(sql), {"t": ident.tenant_id, "s": status})).mappings().all()
     return [repo.claim_view(dict(r)) for r in rows]

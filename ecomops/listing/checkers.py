@@ -10,7 +10,16 @@ REQUIRED_PARAMS = {
     "HOME_APPLIANCE_HEATER": ("额定功率", "容量", "能效等级", "3C"),
     "PERSONAL_SHAMPOO": ("净含量", "保质期", "备案号"),
     "DAILY_GENERAL": ("品名", "规格"),
+    "DIGITAL_TABLET": ("品名", "屏幕尺寸", "存储容量", "3C"),
+    "DIGITAL_PHONE": ("品名", "屏幕尺寸", "存储容量", "3C"),
+    "DIGITAL_COMPUTER": ("品名", "处理器", "内存", "存储容量"),
+    "BOOKS": ("书名", "ISBN", "出版社"),
+    "FRESH_FRUIT": ("品名", "产地", "净含量", "保质期"),
+    "DAIRY_MILK": ("品名", "净含量", "保质期", "生产许可证编号"),
+    "APPAREL": ("品名", "面料成分", "尺码", "执行标准"),
+    "TRAVEL_HOTEL": ("酒店名称", "地址", "入住时间", "退订规则"),
 }
+DEFAULT_REQUIRED = ("品名",)     # 未列出的品类只要求品名
 CERT_LABELS = r"3C(?:认证)?(?:证书)?(?:编号|号)?|备案号|质检报告号"
 
 
@@ -71,7 +80,7 @@ def check(name: str, document: dict, category: str, structured: dict | None = No
         for word in violating_terms(text, words):
             result["blocking_violations"].append({"checker": name, "term": word, "message": f"命中违规宣称：{word}"})
     elif name == "required_params":
-        for field in REQUIRED_PARAMS.get(category, ("品名",)):
+        for field in REQUIRED_PARAMS.get(category, DEFAULT_REQUIRED):
             # 标签必须有非空值；仅在宣传句中出现参数名不算参数表。
             if not re.search(rf"{re.escape(field)}(?:认证)?(?:证书)?(?:编号|号)?[ \t]*[：:][ \t]*[^\s；;，,]+", text):
                 result["blocking_violations"].append({"checker": name, "field": field, "message": f"缺少必填参数：{field}"})
