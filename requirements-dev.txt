@@ -1,0 +1,3 @@
+-r requirements.txt
+# 仅测试用：S3 兼容仿真服务。真实 MinIO 镜像在本机拉不下来，用它验证 MinIO 客户端后端的 S3 协议路径（不等于真实 MinIO）
+moto[server]

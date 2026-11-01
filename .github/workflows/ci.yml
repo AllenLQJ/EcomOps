@@ -35,7 +35,7 @@ jobs:
           EcomPilot/.venv/bin/pip install -r EcomPilot/requirements.txt
       - name: Install EcomOps
         working-directory: EcomOps
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
       - name: Test
         working-directory: EcomOps
         run: python -m pytest tests -q
