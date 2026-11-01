@@ -102,15 +102,14 @@ async def auto_approve(state: State) -> dict:
 async def execute_refund_callback(state: State) -> dict:
     """路线图图 3-4 的 execute_refund_callback 节点。
 
-    节点本身不同步调用 Pilot：Pilot 提交接口有 3 秒超时，同步回调超时会触发它的补偿回滚（决策记录第 5 条）。
-    所以这里只做两件事：以 step_execution_id 防重入地"登记并唤醒"——退款回调事件已在批准节点里和审批结论同一个 PG 事务写进
-    outbox_events；真正的 HTTP 调用、超时后先查 refunds/status 再决定是否补发、重试到上限转人工，都由 outbox worker 完成。"""
+    节点本身不调用 Pilot，也不在图里唤醒 worker：Pilot 提交接口有 3 秒超时，同步回调超时会触发它的补偿回滚（决策记录第 5 条）；
+    而在图里立刻起 worker，会让"批准"接口返回的状态随回调速度忽快忽慢地变（APPROVED_PENDING_CALLBACK / CALLBACK_RETRYING / COMPLETED），
+    CI 上就因此偶发失败。所以这里只做一件事：以 step_execution_id 防重入地登记"回调已派发"——退款回调事件早已在批准节点里和审批结论
+    同一个 PG 事务写进 outbox_events；唤醒由路由层在响应算好之后做（`_kick()`），兜底由 outbox 的定时循环做；
+    真正的 HTTP 调用、超时后先查 refunds/status、重试到上限转人工，都由 outbox worker 完成。"""
     cn = state["claim_no"]
     async with get_engine().begin() as c:
-        first = await repo.once(c, f"{cn}:r{state['round']}:execute_refund_callback", cn, "execute_refund_callback")
-    if first:
-        from ecomops.outbox import worker     # 延迟导入：worker 反过来被 claims.service 的扫描用到
-        asyncio.get_running_loop().create_task(worker.process_due())
+        await repo.once(c, f"{cn}:r{state['round']}:execute_refund_callback", cn, "execute_refund_callback")
     return {}
 
 

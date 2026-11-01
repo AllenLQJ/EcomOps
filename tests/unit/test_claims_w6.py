@@ -273,3 +273,19 @@ def test_refund_callback_node_runs_once_for_auto_and_supervisor_approval_but_not
     # 重复批准（同一决定）幂等：节点不会再登记第二次
     c.post("/api/v1/claims/CB_SUP/confirm", json={"action": "APPROVE"}, headers=H())
     assert steps(db_name, "CB_SUP").count("execute_refund_callback") == 1
+
+
+async def test_refund_callback_node_registers_once_and_never_wakes_the_worker(db_name, monkeypatch):
+    """回归：节点里起 worker 会让"批准"接口返回的状态随回调快慢变化（CI 上 APPROVED_PENDING_CALLBACK 偶发变成 CALLBACK_RETRYING）。"""
+    from ecomops.claims import graph as claim_graph
+    from ecomops.outbox import worker
+
+    def boom(*a, **k):
+        raise AssertionError("节点不能唤醒 worker；唤醒归路由层 _kick() 和定时循环")
+    monkeypatch.setattr(worker, "process_due", boom)
+    await claim_graph.execute_refund_callback({"claim_no": "NODE1", "round": 1})
+    await claim_graph.execute_refund_callback({"claim_no": "NODE1", "round": 1})     # 重入：仍只登记一次
+    import psycopg
+    from ecomops.core.db import conninfo
+    with psycopg.connect(conninfo(db_name)) as conn:
+        assert conn.execute("SELECT count(*) FROM step_executions WHERE claim_no='NODE1' AND node='execute_refund_callback'").fetchone()[0] == 1

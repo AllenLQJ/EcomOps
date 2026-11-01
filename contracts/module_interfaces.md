@@ -95,5 +95,5 @@
 - **撤回后重新申请**：同一订单子项的 `claim_no` 是确定性的，所以重新申请会撞上已撤回的旧工单。`POST /internal/v1/claims/submit` 遇到 `WITHDRAWN` 的同号工单时重置为新一轮审核（`audit_round+1`，清掉上一轮的路由/金额/风险），其它状态仍是幂等重放。结果出箱事件的唯一键第 2 轮起带 `_r<round>` 后缀，避免第二次撤回/驳回的回写被第一次的键吞掉。
 
 ### 7.y 增补：execute_refund_callback 节点与加急排序
-- 图 3-4 里的 `execute_refund_callback` 节点现在在 `claim_audit` 图中：`auto_approve` 与"批准类主管决定"之后进入该节点，驳回/退回补材料直接结束。节点以 `step_execution_id`（`<claim_no>:r<round>:execute_refund_callback`）防重入，**只登记并唤醒 outbox worker，不同步调用 Pilot**；真正的 HTTP 调用、超时后先查 `refunds/status`、重试到上限转人工，仍由 outbox worker 完成（原因见决策记录第 5 条）。
+- 图 3-4 里的 `execute_refund_callback` 节点现在在 `claim_audit` 图中：`auto_approve` 与"批准类主管决定"之后进入该节点，驳回/退回补材料直接结束。节点以 `step_execution_id`（`<claim_no>:r<round>:execute_refund_callback`）防重入，**只做防重入登记，既不同步调用 Pilot，也不在图里唤醒 worker**（唤醒由路由层响应算好之后的 `_kick()` 和定时循环负责，否则批准接口返回的状态会随回调快慢变化）；真正的 HTTP 调用、超时后先查 `refunds/status`、重试到上限转人工，仍由 outbox worker 完成（原因见决策记录第 5 条）。
 - `GET /api/v1/claims` 排序：`nlu_signal.priority_boost === true` 的工单排前面，其余按创建时间倒序；每个工单对象带布尔字段 `priority_boost`。加急只是排序辅助，不改变任何审核结论。
