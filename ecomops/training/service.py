@@ -46,8 +46,16 @@ def make_report(messages: list[dict]) -> dict:
     def score(stage):
         attempts = [m for m in answers if m["stage"] == stage]
         return max(0, 100 - 20 * (len(attempts) - 1)) if any(evaluate_answer(stage, m["content"]) for m in attempts) else 0
-    return {"rule_accuracy": score("policy_explain"), "emotional_soothing": score("empathy_listen"),
+    mismatches = policy_summary(messages)["mismatches"]
+    return {"rule_accuracy": max(0, score("policy_explain") - 20 * mismatches), "emotional_soothing": score("empathy_listen"),
             "solution_compliance": score("solution_negotiate")}
+
+
+def policy_summary(messages: list[dict]) -> dict:
+    """条款核对情况（会话查询接口返回；不放进 report，report 保持三项整数分）。"""
+    answers = [m for m in messages if m["role"] == "user"]
+    return {"checked": any(m.get("policy_checked", False) for m in answers),
+            "mismatches": sum(bool(m.get("policy_mismatch")) for m in answers)}
 
 
 async def save(conn, state: dict) -> None:
@@ -66,11 +74,23 @@ async def save(conn, state: dict) -> None:
     """), params)
 
 
-async def create_session(identity: Identity, seed: dict | None) -> dict:
+async def create_session(identity: Identity, seed: dict | None, from_listing_review_id: UUID | None = None) -> dict:
+    if seed is not None and from_listing_review_id is not None:
+        raise ApiError(400, "INVALID_REQUEST", "provide only one scenario source")
     state = dict(session_id=str(uuid4()), tenant_id=identity.tenant_id, user_id=identity.user_id,
                  scenario_seed=DEFAULT_SEED.copy() if seed is None else seed,
                  stage=STAGES[0], follow_up_count=0, messages=[], summary="", report=None, status="ACTIVE")
     async with get_engine().begin() as conn:
+        if from_listing_review_id is not None:
+            result = await conn.execute(text("SELECT scenario_seed FROM listing_reviews WHERE review_id=:review_id AND tenant_id=:tenant_id"),
+                {"review_id": str(from_listing_review_id), "tenant_id": identity.tenant_id})
+            seed = result.scalar_one_or_none()
+            if not seed:
+                raise ApiError(404, "NOT_FOUND", "scenario seed not found")
+            state["scenario_seed"] = seed
+        opening = state["scenario_seed"].get("opening_message")
+        if isinstance(opening, str) and opening.strip():
+            state["messages"] = [dict(role="assistant", content=opening, stage=STAGES[0])]
         await save(conn, state)
     return state
 
@@ -94,32 +114,18 @@ async def load(conn, session_id: str, identity: Identity, *, lock=False) -> dict
 
 async def get_session(session_id: str, identity: Identity) -> dict:
     async with get_engine().connect() as conn:
-        return await load(conn, session_id, identity)
+        state = await load(conn, session_id, identity)
+    return {**state, "policy": policy_summary(state["messages"])}
 
 
-async def chat(session_id: str, identity: Identity, message: str) -> tuple[dict, str, bool]:
-    # Serialize simultaneous turns so no message or transition can be lost.
+async def chat(session_id: str, identity: Identity, message: str, graph=None) -> tuple[dict, str, bool]:
+    from ecomops.training.graph import default_graph
+    graph = graph if graph is not None else default_graph()
     async with get_engine().begin() as conn:
-        state = await load(conn, session_id, identity, lock=True)
-        stage = state["stage"]
-        if state["status"] != "ACTIVE" or stage not in KEYWORDS:
-            raise ApiError(422, "INVALID_STAGE", "training session has ended or has an invalid stage")
-        state["messages"].append(dict(role="user", content=message, stage=stage))
-        advanced = evaluate_answer(stage, message) or state["follow_up_count"] >= 2
-        if advanced:
-            state["stage"] = STAGES[STAGES.index(stage) + 1]
-            state["follow_up_count"] = 0
-        else:
-            state["follow_up_count"] += 1
-        reply = buyer_reply(state["scenario_seed"], state["stage"], state["follow_up_count"])
-        state["messages"].append(dict(role="assistant", content=reply, stage=state["stage"]))
-        if len(state["messages"]) % 20 == 0:
-            state["summary"] = summarize(state["messages"])
-        if state["stage"] == "finished":
-            state["status"] = "FINISHED"
-            state["report"] = make_report(state["messages"])
-        await save(conn, state)
-    return state, reply, advanced
+        result = await graph.ainvoke(
+            dict(session_id=session_id, tenant_id=identity.tenant_id, user_id=identity.user_id, message=message),
+            config={"configurable": {"thread_id": f"train:{identity.tenant_id}:{session_id}", "connection": conn}})
+    return result["data"], result["reply"], result["advanced"]
 
 
 def reply_segments(reply: str):

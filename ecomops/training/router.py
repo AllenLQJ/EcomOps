@@ -1,7 +1,8 @@
 """Training API with JSON-framed server-sent events."""
 import json
+from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,7 @@ identity_dependency = require_roles("cs_agent", "operator", "supervisor")
 
 class CreateSession(BaseModel):
     scenario_seed: dict | None = None
+    from_listing_review_id: UUID | None = None
 
 
 class ChatMessage(BaseModel):
@@ -23,7 +25,7 @@ class ChatMessage(BaseModel):
 @router.post("/sessions", status_code=201)
 async def create_session(body: CreateSession = Body(default_factory=CreateSession),
                          identity: Identity = Depends(identity_dependency)):
-    return await service.create_session(identity, body.scenario_seed)
+    return await service.create_session(identity, body.scenario_seed, body.from_listing_review_id)
 
 
 @router.get("/sessions/{session_id}")
@@ -36,9 +38,10 @@ def event(name: str, data: dict) -> str:
 
 
 @router.post("/sessions/{session_id}/chat/stream")
-async def chat_stream(session_id: str, body: ChatMessage, identity: Identity = Depends(identity_dependency)):
+async def chat_stream(session_id: str, body: ChatMessage, request: Request, identity: Identity = Depends(identity_dependency)):
     # Resolve errors and commit state before sending HTTP/SSE headers.
-    state, reply, advanced = await service.chat(session_id, identity, body.message)
+    state, reply, advanced = await service.chat(session_id, identity, body.message,
+                                                getattr(request.app.state, "training_graph", None))
 
     async def stream():
         for segment in service.reply_segments(reply):
