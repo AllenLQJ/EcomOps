@@ -1,4 +1,5 @@
-"""三轨审核：纯规则，无 LLM。EVIDENCE 轨的"LLM 步骤"支持故障注入降级（fallback_used）。"""
+"""三轨审核：默认纯规则。配置了真实 LLM 时，EVIDENCE 轨多一个"是否质量问题"的判断，但只能转人工，不能触发自动通过。
+LLM 调用失败/输出不合规 → fallback_used（与故障注入同一降级路径）。"""
 import asyncio
 
 from ecomops.core import llm
@@ -13,18 +14,35 @@ def rule_track(t: dict) -> dict:
             "detail": {"window_days": WINDOW_DAYS, "days_since_delivery": int(t["days_since_delivery"])}}
 
 
-def evidence_track(t: dict) -> dict:
+AUTO_APPROVE_CONFIDENCE = 0.85      # 与 route() 的自动通过门槛一致
+LLM_CAP = 0.84                      # LLM 参与且与规则不一致/低置信时的置信上限：只能转人工，不能自动通过
+LLM_MIN_CONFIDENCE = 0.6
+
+
+def evidence_track(t: dict, judged: dict | None = None, llm_error: bool = False) -> dict:
+    """judged: 真实 LLM 的判断（None=未配置）；llm_error: LLM 已配置但调用/解析失败。"""
     text = t.get("buyer_reason_text") or ""
     quality = any(w in text for w in QUALITY_WORDS)
     urls = t.get("evidence_urls") or []
     evidence_ok = len(urls) >= 1
-    if llm.should_fail("evidence_track"):
+    if llm_error or llm.should_fail("evidence_track"):
         return {"track": "EVIDENCE", "passed": False, "confidence": 0.0, "fallback_used": True,
                 "detail": {"quality_claim": quality, "evidence_ok": evidence_ok, "evidence_missing": False,
-                           "degraded": True}}
+                           "degraded": True, **({"llm_error": True} if llm_error else {})}}
+    detail_llm = None
+    if judged is not None:
+        detail_llm = {"quality_claim": judged["quality_claim"], "confidence": judged["confidence"], "reason": judged["reason"]}
+        quality = quality or judged["quality_claim"]      # LLM 只能"多提示一个质量问题"，不能抹掉关键词命中
     conf = round(0.5 + 0.3 * quality + 0.2 * evidence_ok, 3)
+    detail = {"quality_claim": quality, "evidence_ok": evidence_ok, "evidence_missing": quality and not evidence_ok}
+    if detail_llm is not None:
+        detail["llm"] = detail_llm
+        keyword = any(w in text for w in QUALITY_WORDS)
+        if judged["quality_claim"] != keyword or judged["confidence"] < LLM_MIN_CONFIDENCE:
+            conf = min(conf, LLM_CAP)
+            detail["llm_disagreement"] = judged["quality_claim"] != keyword
     return {"track": "EVIDENCE", "passed": quality and evidence_ok, "confidence": conf, "fallback_used": False,
-            "detail": {"quality_claim": quality, "evidence_ok": evidence_ok, "evidence_missing": quality and not evidence_ok}}
+            "detail": detail}
 
 
 def fee_track(t: dict, quality: bool) -> dict:
@@ -39,7 +57,12 @@ async def run_three(t: dict) -> dict:
         return rule_track(t)
 
     async def _evi():
-        return evidence_track(t)
+        if not llm.configured():
+            return evidence_track(t)
+        try:
+            return evidence_track(t, judged=await llm.judge_quality(t.get("buyer_reason_text") or ""))
+        except llm.LlmError:
+            return evidence_track(t, llm_error=True)
 
     rule, evi = await asyncio.gather(_rule(), _evi())
     fee = fee_track(t, bool(evi["detail"]["quality_claim"]))

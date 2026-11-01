@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     enable_faults: bool = False
     reconcile_interval_seconds: float = 30.0
     outbox_max_attempts: int = 10
+    llm_base_url: str = ""                 # OpenAI 兼容接口（含 /v1 或 /api/paas/v4）；三项都配置才启用真实 LLM
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_timeout_s: float = 8.0
     alert_webhook_url: str = ""            # 非空时，新告警会 POST 到该地址（失败只记录，不影响主流程）
     alert_stuck_minutes: int = 30          # 退款回调停留超过该时长视为"卡住"告警
     outbox_backoff_seconds: float = 30.0
