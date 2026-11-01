@@ -1,9 +1,12 @@
+import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ecomops.core.auth import require_roles
+from ecomops.core.errors import ApiError
 from ecomops.kb import service
 
 router = APIRouter(prefix="/api/v1/kb", tags=["kb"])
@@ -27,8 +30,37 @@ class Publish(BaseModel):
 
 
 @router.post("/ask")
-async def ask(body: Ask, identity=Depends(read)):
-    return await service.ask(body, identity)
+async def ask(body: Ask, request: Request, identity=Depends(read)):
+    return await service.ask(body, identity, graph=getattr(request.app.state, "kb_graph", None))
+
+
+def event(name: str, data: dict) -> str:
+    return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/ask/stream")
+async def ask_stream(body: Ask, request: Request, identity=Depends(read)):
+    # Finish the graph and commit its side effects before starting the response.
+    error = None
+    try:
+        result = await service.ask(body, identity, graph=getattr(request.app.state, "kb_graph", None))
+    except ApiError as exc:
+        error = {"code": exc.code}
+    except Exception:
+        # Never send provider exception details, URLs or credentials to clients.
+        error = {"code": "UPSTREAM_ERROR"}
+
+    async def stream():
+        if error is not None:
+            yield event("error", error)
+            return
+        yield event("meta", {key: result[key] for key in ("query_type", "top1_score", "hits", "session_id")})
+        # complete() returns full text: these are chunks, not live model tokens.
+        for offset in range(0, len(result["answer"]), 40):
+            yield event("token", {"text": result["answer"][offset:offset + 40]})
+        yield event("done", {key: result[key] for key in ("answer", "fallback_used", "enqueued_queue_id")})
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/pending")
